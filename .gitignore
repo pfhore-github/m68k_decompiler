@@ -1,0 +1,7 @@
+dist-newstyle/*
+.vscode/*
+cabal.project.local
+*.o
+*.hi
+*.o-boot
+*.hi-boot
