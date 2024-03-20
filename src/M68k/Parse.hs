@@ -340,11 +340,12 @@ next32 = do
 
 nextX t = if t == LONG then next32 else next16
 
+parseEaEx :: Int -> AddrBase -> MaybeT (State (Int, [Word8])) MemOperand
 parseEaEx nw base
   | not ( testBit nw 8) = do return $ Offset8 (getBit nw 0 0xff) base ext index cc
   | testBit nw 3 = nothingT
   | getBit nw 6 3 == 3 = nothingT
-  | od_i == 0 && not isPre = nothingT
+  | od_i == 0 && isPost = nothingT
   | otherwise = do
       bd <-
         case getBit nw 4 3 of
@@ -359,7 +360,7 @@ parseEaEx nw base
           _ -> return 0
       return $ if od_i == 0
         then Indirect bd base_p ext index_p cc
-        else (if isPre
+        else (if isPost
                then PostIndex
                else PreIndex )
              bd base_p ext index_p cc od
@@ -367,7 +368,7 @@ parseEaEx nw base
               ext = testBit nw 11
               cc = getBit nw 9 3
               od_i = getBit nw 0 3
-              isPre = testBit nw 2
+              isPost = testBit nw 2
               index_p =
                 if testBit nw 6
                 then Nothing
@@ -454,6 +455,7 @@ parseBitTestCommon regT regN op_c pos = do
   op <- parseEA regT regN (ImmInt <$> next16 )
   return $ op_c t op pos
 
+parseBitTest :: Int -> Int -> (AType -> Operand -> BopSc -> b) -> MaybeT (State (Int, [Word8])) b
 parseBitTest regT regN op_c =
   next16 >>= parseBitTestCommon regT regN op_c . BImm
 

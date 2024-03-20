@@ -185,6 +185,9 @@ bitmask t (BReg n) = do
   v <- readDn uint8 n
   return $ Const t 1 $<< v
 
+spVar :: Var
+spVar = EnvVar (PTR uint16) "A7"
+
 type DecompileRet = StateV MEnv ()
 decompileBxxx :: String -> AType -> Operand -> BopSc -> DecompileRet
 decompileBxxx op t ea pos = do
@@ -214,7 +217,7 @@ decompile1MoveMDecr t sz regs an = do
       regsR = reverse $ zip [0 ..] regs
       len = length regs
   temp <- newVar t
-  temp $= (VarValue base $+# (-len * sz))
+  temp $= (VarValue base $+# (- (len * sz)))
   mapB (\(i, n) -> do
            val <- rnVal t n
            (VarValue base $@# i) $= val)
