@@ -1,0 +1,89 @@
+cabal-version:   3.4
+name:            m68k-decompiler
+version:         0.1.0.0
+license:         GPL-3.0-or-later
+license-file:    LICENSE
+author:          pfhore-github
+maintainer:      ookawa.michiaki@gmail.com
+category:        Data
+build-type:      Simple
+extra-doc-files: CHANGELOG.md
+
+common default
+  ghc-options:      -Wall
+  default-language: Haskell2010
+  build-depends:
+    , base             ^>=4.17.2.0
+    , hmpfr
+    , binary
+    , bytestring
+    , containers
+    , hspec
+    , mtl
+    , transformers
+    , vector
+
+library
+  import:          default
+
+  -- cabal-fmt: expand src
+  exposed-modules:
+    Analyze
+    CExpr
+    CStmt
+    CType
+    Env
+    M68k.Decompile
+    M68k.Disassemble
+    M68k.Env
+    M68k.LongDouble
+    M68k.Parse
+    MonadOp
+    Util
+
+  hs-source-dirs:  src
+
+executable m68k-decompiler
+  import:         default
+  main-is:        decompiler.hs
+
+  -- other-modules:
+
+  -- other-extensions:
+
+  build-depends:
+    , base             ^>=4.17.2.0
+    , m68k-decompiler
+
+  hs-source-dirs: app
+
+executable m68k-disassembler
+  import:         default
+  main-is:        disassembler.hs
+
+  -- other-modules:
+
+  -- other-extensions:
+
+  build-depends:
+    , base             ^>=4.17.2.0
+    , m68k-decompiler
+
+  hs-source-dirs: app
+
+test-suite m68k-decompiler-test
+  import:           default
+  default-language: Haskell2010
+
+  -- other-modules:
+
+  -- other-extensions:
+
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   test
+  main-is:          M68kParseSpec.hs
+
+  -- Test dependencies.
+  build-depends:
+    , base             ^>=4.17.2.0
+    , m68k-decompiler
