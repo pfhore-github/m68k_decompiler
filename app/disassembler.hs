@@ -16,7 +16,7 @@ disasm from to ops
 main :: IO ()
 main = do
   args <- getArgs
-  contents <- B.readFile "../../quadra950.ROM"
+  contents <- B.readFile "../quadra950.ROM"
   let start = fst $ head $ readHex ( head args )
   let end = fst $ head $ readHex ( args !! 1 )
   let list = B.unpack contents

@@ -111,15 +111,17 @@ getRn d =
 data BopSc
   = BImm Int
   | BReg Int
+  deriving (Eq)
+instance Show BopSc where
+  show (BImm n) = printf "#%d" n
+  show (BReg n) = printf "%%D%d" n
 
 instance PrintfArg BopSc where
-  formatArg x = formatString (
-    case x of
-      BImm n ->  printf "#%d" n
-      BReg n ->  printf "%%D%d" n
-    :: String )
+  formatArg x = formatString (show x)
 
 data AFType = FInt AType | FSINGLE | FDOUBLE | FEXT | FPACKED
+  deriving (Show, Eq)
+
 instance PrintfArg AFType where
   formatArg x = formatString (
     case x of
@@ -150,6 +152,7 @@ data FpuOperand =
   FpuOperandInt Operand |
   FpuOperandFlt MemOperand |
   FpuImm LongDouble
+  deriving (Eq)
 
 instance Show FpuOperand where
   show (FpuRn n) = printf "%%FP%d" n
@@ -313,6 +316,8 @@ data Op
   | PTESTR Int
   | MOVE16 Bool Bool Int Int
   | MOVE16IncInc Int Int
+  deriving (Show, Eq)
+
 getPC :: State (Int, [Word8]) Int
 getPC = state (\(s, p) -> (s, (s, p)))
 
@@ -342,7 +347,7 @@ nextX t = if t == LONG then next32 else next16
 
 parseEaEx :: Int -> AddrBase -> MaybeT (State (Int, [Word8])) MemOperand
 parseEaEx nw base
-  | not ( testBit nw 8) = do return $ Offset8 (getBit nw 0 0xff) base ext index cc
+  | not ( testBit nw 8) = do return $ Offset8 (toS8 (getBit nw 0 0xff)) base ext index cc
   | testBit nw 3 = nothingT
   | getBit nw 6 3 == 3 = nothingT
   | od_i == 0 && isPost = nothingT
@@ -380,52 +385,46 @@ parseEaEx nw base
 
 isSpecialEA regT regN = regT == 7 && regN == 4
 
+
 parseEA :: Int -> Int -> MaybeT (State (Int, [Word8])) Operand
   -> MaybeT (State (Int, [Word8])) Operand
-parseEA regT regN other = do
-  pc <- lift getPC
-  parseEAP regT regN other pc
-
-parseEAP :: Int -> Int -> MaybeT (State (Int, [Word8])) Operand -> Int
-  -> MaybeT (State (Int, [Word8])) Operand
-parseEAP 0 regN _ _ = do
+parseEA 0 regN _ = do
   return $ DR regN
-parseEAP 1 regN _ _ = do
+parseEA 1 regN _ = do
   return $ AR regN
-parseEAP 7 4 other _ = other
-parseEAP n r _ pc = do
-  mem <- parseEAMemP n r pc
+parseEA 7 4 other = other
+parseEA n r _ = do
+  mem <- parseEAMem n r
   return $ Address mem
 
-parseEAMem regT regN = do
-  pc <- lift getPC
-  parseEAMemP regT regN pc
 
-parseEAMemP :: Int -> Int -> Int -> MaybeT (State (Int, [Word8])) MemOperand
-parseEAMemP 2 regN _ = do
+parseEAMem :: Int -> Int -> MaybeT (State (Int, [Word8])) MemOperand
+parseEAMem 2 regN = do
   return $ UnRefAR regN
-parseEAMemP 3 regN _ = do
+parseEAMem 3 regN = do
   return $ UnRefInc regN
-parseEAMemP 4 regN _ = do
+parseEAMem 4 regN = do
   return $ UnRefDec regN
-parseEAMemP 5 regN _ = do
+parseEAMem 5 regN = do
   nw <- next16
   return $ Offset16 (toS16 nw) $ BaseAR regN
-parseEAMemP 6 regN _ = do
+parseEAMem 6 regN = do
   nw <- next16
   parseEaEx nw (BaseAR regN)
-parseEAMemP 7 0 _ = do
+parseEAMem 7 0 = do
   ImmAddr <$> next16
-parseEAMemP 7 1 _ = do
+parseEAMem 7 1 = do
   ImmAddr <$> next32
-parseEAMemP 7 2 pc = do
+parseEAMem 7 2 = do
+  pc <- lift getPC
   imm <- next16
   return $ Offset16 (toS16 imm) $ BasePC pc
-parseEAMemP 7 3 pc = do
+parseEAMem 7 3 = do
+  pc <- lift getPC
   nw <- next16
   parseEaEx nw (BasePC pc)
 
-parseEAMemP _ _ _ = MaybeT $ do return Nothing
+parseEAMem _ _ = MaybeT $ do return Nothing
 
 nextOpX BYTE = next16
 nextOpX WORD = next16
@@ -456,8 +455,9 @@ parseBitTestCommon regT regN op_c pos = do
   return $ op_c t op pos
 
 parseBitTest :: Int -> Int -> (AType -> Operand -> BopSc -> b) -> MaybeT (State (Int, [Word8])) b
-parseBitTest regT regN op_c =
-  next16 >>= parseBitTestCommon regT regN op_c . BImm
+parseBitTest regT regN op_c = do
+  x <- next16
+  parseBitTestCommon regT regN op_c $ BImm (if x == 0 then 8 else x)
 
 parseBitTest2 regT regN op_c dn = parseBitTestCommon regT regN op_c (BReg dn)
 
@@ -505,25 +505,30 @@ parseOp0 dni opi regT regN
     let t = toAType opi
         bitOp = toBitOp opi
         ea = parseEA regT regN nothingT
-        dst = parseEA regT regN ( return CCR)
-        src = parseEA regT regN ( ImmInt <$> next16)
+        dst = parseEA regT regN (case opi of
+                                   0 -> return CCR
+                                   1 -> return SR
+                                   _ -> nothingT
+                                )
+              
+        src = parseEA regT regN ( ImmInt <$> nextX t )
      in case dni of
-          0 -> doOp2 ANDI t dst next16
-          1 -> doOp2 ANDI t dst next16
-          2 -> doOp2 SUBI t ea next16
-          3 -> doOp2 ADDI t ea next16
+          0 -> doOp2 ORI t dst $ nextX t
+          1 -> doOp2 ANDI t dst $ nextX t
+          2 -> doOp2 SUBI t ea $ nextX t
+          3 -> doOp2 ADDI t ea  $ nextX t
           4 -> parseBitTest regT regN bitOp
-          5 -> doOp2 EORI t dst next16
-          6 -> doOp2 CMPI t src next16
+          5 -> doOp2 EORI t dst $ nextX t
+          6 -> doOp2 CMPI t src $ nextX t
           7 -> parseOpMoves t regT regN
-          _ -> fail ""
+          _ -> nothingT
   | opi == 3 = do
     case dni of
       3 -> return ILLEGAL
-      4 -> parseBitTest regT regN BSET
+      4 -> parseBitTest regT regN BSET      
       _
         | dni < 3 -> parseOpCmp2 (toAType dni) regT regN
-        | otherwise -> parseOpCmp2 (toAType $ dni - 5) regT regN
+        | otherwise -> parseCas (toAType $ dni - 5) regT regN
   | otherwise = do
     if regT == 1
       then parseMoveP
@@ -536,9 +541,8 @@ parseOp0 dni opi regT regN
       else parseBitTest2 regT regN (toBitOp $ opi - 4) dni
 
 parseOpMove t dstT dstN srcT srcN = do
-  pc <- lift getPC
-  srcEA <- parseEAP srcT srcN ( ImmInt <$> ( if t == LONG then next32 else next16 ) ) pc
-  dstEA <- parseEAP dstT dstN nothingT pc
+  srcEA <- parseEA srcT srcN ( ImmInt <$> ( if t == LONG then next32 else next16 ) )
+  dstEA <- parseEA dstT dstN nothingT
   return $
     if dstT == 1
       then MOVEA t srcEA dstN
@@ -670,7 +674,7 @@ parse0471 7 regN = do
       _ -> ILLEGAL
 parse0471 _ _ = undefined
 
-parseOp42 0 = parseOpV1 LONG NEG
+parseOp42 0 = parseOpV1 LONG NEGX
 parseOp42 1 = parseOpV1 LONG CLR
 parseOp42 2 = parseOpV1 LONG NEG
 parseOp42 3 = parseOpV1 LONG NOT

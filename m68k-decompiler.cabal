@@ -18,7 +18,6 @@ common default
     , binary
     , bytestring
     , containers
-    , hspec
     , mtl
     , transformers
     , vector
@@ -75,8 +74,8 @@ test-suite m68k-decompiler-test
   import:           default
   default-language: Haskell2010
 
-  -- other-modules:
-
+  -- cabal-fmt: expand test
+  other-modules: UtilSpec
   -- other-extensions:
 
   type:             exitcode-stdio-1.0
@@ -87,3 +86,5 @@ test-suite m68k-decompiler-test
   build-depends:
     , base             ^>=4.17.2.0
     , m68k-decompiler
+    , hspec
+    , QuickCheck
