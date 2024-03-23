@@ -5,3 +5,4 @@ cabal.project.local
 *.hi
 *.o-boot
 *.hi-boot
+m68k-disassembler
