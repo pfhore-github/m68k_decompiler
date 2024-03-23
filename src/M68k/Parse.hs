@@ -426,16 +426,19 @@ parseEAMem 7 3 = do
 
 parseEAMem _ _ = MaybeT $ do return Nothing
 
+nextOpX :: AType -> MaybeT (State (Int, [Word8])) Int
 nextOpX BYTE = next16
 nextOpX WORD = next16
 nextOpX LONG = next32
 
+parseOpMoves :: AType -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOpMoves t regT regN = do
   nw <- next16
   let rn = getBit nw 12 15
   ea <- parseEAMem regT regN
   return $ MOVES t (testBit nw 11) ea rn
 
+parseOpCmp2 :: AType -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOpCmp2 t regT regN = do
   nw <- next16
   ea <- parseEAMem regT regN
@@ -446,6 +449,7 @@ parseOpCmp2 t regT regN = do
   let rn = getBit nw 12 15
   return $ op t ea rn
 
+parseBitTestCommon :: Int -> Int -> (AType -> Operand -> t -> b) -> t -> MaybeT (State (Int, [Word8])) b
 parseBitTestCommon regT regN op_c pos = do
   let t =
         if regT == 0
@@ -459,8 +463,10 @@ parseBitTest regT regN op_c = do
   x <- next16
   parseBitTestCommon regT regN op_c $ BImm (if x == 0 then 8 else x)
 
+parseBitTest2 :: Int -> Int -> (AType -> Operand -> BopSc -> b) -> Int -> MaybeT (State (Int, [Word8])) b
 parseBitTest2 regT regN op_c dn = parseBitTestCommon regT regN op_c (BReg dn)
 
+parseMoveP :: AType -> Int -> Int -> Bool -> MaybeT (State (Int, [Word8])) Op
 parseMoveP t dn regN toMem = do
   imm <- next16
   return $ MOVEP t toMem regN imm dn
@@ -540,6 +546,7 @@ parseOp0 dni opi regT regN
              (opi < 6)
       else parseBitTest2 regT regN (toBitOp $ opi - 4) dni
 
+parseOpMove :: AType -> Int -> Int -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOpMove t dstT dstN srcT srcN = do
   srcEA <- parseEA srcT srcN ( ImmInt <$> ( if t == LONG then next32 else next16 ) )
   dstEA <- parseEA dstT dstN nothingT
@@ -548,8 +555,10 @@ parseOpMove t dstT dstN srcT srcN = do
       then MOVEA t srcEA dstN
       else MOVE t srcEA dstEA
 
-parseOpV1 t opc regT regN = opc t <$> parseEA regT regN nothingT
+parseOpV1 :: t -> (t -> Operand -> b) -> MaybeT (State (Int, [Word8])) Operand -> Int -> Int -> MaybeT (State (Int, [Word8])) b
+parseOpV1 t opc e regT regN = opc t <$> parseEA regT regN e
 
+movecName :: (Eq a, Num a) => a -> String
 movecName x
   | x == 0 = "SFC"
   | x == 1 = "DFC"
@@ -568,34 +577,37 @@ movecName x
   | x == 0x807 = "SRP"
   | otherwise = "???"
 
-parseOp40 0 = parseOpV1 BYTE NEGX
-parseOp40 1 = parseOpV1 BYTE CLR
-parseOp40 2 = parseOpV1 BYTE NEG
-parseOp40 3 = parseOpV1 BYTE NOT
+parseOp40 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp40 0 = parseOpV1 BYTE NEGX nothingT
+parseOp40 1 = parseOpV1 BYTE CLR nothingT
+parseOp40 2 = parseOpV1 BYTE NEG nothingT
+parseOp40 3 = parseOpV1 BYTE NOT nothingT
 parseOp40 4 =
   \regT regN ->
     (if regT == 1
        then LINK regN <$> next32
-       else parseOpV1 BYTE NBCD regT regN)
-parseOp40 5 = parseOpV1 BYTE TST
+       else parseOpV1 BYTE NBCD nothingT regT regN)
+parseOp40 5 = parseOpV1 BYTE TST $ ImmInt <$> next16
 parseOp40 6 = parseMul
 parseOp40 _ = undefined
 
-parseOp41 0 = parseOpV1 WORD NEGX
-parseOp41 1 = parseOpV1 WORD CLR
-parseOp41 2 = parseOpV1 WORD NEG
-parseOp41 3 = parseOpV1 WORD NOT
+parseOp41 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp41 0 = parseOpV1 WORD NEGX nothingT
+parseOp41 1 = parseOpV1 WORD CLR nothingT
+parseOp41 2 = parseOpV1 WORD NEG nothingT
+parseOp41 3 = parseOpV1 WORD NOT nothingT
 parseOp41 4 =
   \regT regN ->
     (case regT of
        0 -> return $ SWAP regN
        1 -> return $ BKPT regN
        _ -> PEA <$> parseEAMem regT regN)
-parseOp41 5 = parseOpV1 WORD TST
+parseOp41 5 = parseOpV1 WORD TST $ ImmInt <$> next16
 parseOp41 6 = parseDiv
 parseOp41 7 = parse0471
 parseOp41 _ = undefined
 
+parseMul :: Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseMul regT regN = do
   nw <- next16
   let qw = testBit nw 10
@@ -617,6 +629,7 @@ parseMul regT regN = do
              ea
              dl
 
+parseDiv :: Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseDiv regT regN = do
   nw <- next16
   let qw = testBit nw 10
@@ -636,6 +649,7 @@ parseDiv regT regN = do
       dr
       dq
 
+parse0471 :: (Eq a, Num a) => a -> Int -> MaybeT (State (Int, [Word8])) Op
 parse0471 0 regN = do
   return $ TRAPn regN
 parse0471 1 regN = do
@@ -674,10 +688,11 @@ parse0471 7 regN = do
       _ -> ILLEGAL
 parse0471 _ _ = undefined
 
-parseOp42 0 = parseOpV1 LONG NEGX
-parseOp42 1 = parseOpV1 LONG CLR
-parseOp42 2 = parseOpV1 LONG NEG
-parseOp42 3 = parseOpV1 LONG NOT
+parseOp42 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp42 0 = parseOpV1 LONG NEGX nothingT
+parseOp42 1 = parseOpV1 LONG CLR nothingT
+parseOp42 2 = parseOpV1 LONG NEG nothingT
+parseOp42 3 = parseOpV1 LONG NOT nothingT
 parseOp42 4 =
   \regT regN ->
     (if regT == 0
@@ -686,7 +701,7 @@ parseOp42 4 =
          imm <- next16
          ea <- parseEAMem regT regN
          return $ MOVEM WORD True ea [x | x <- [0 .. 15], testBit imm x])
-parseOp42 5 = parseOpV1 LONG TST
+parseOp42 5 = parseOpV1 LONG TST $ ImmInt <$> next32
 parseOp42 6 =
   \regT regN ->
     (do imm <- next16
@@ -698,13 +713,14 @@ parseOp42 7 =
         return $ JSR ea)
 parseOp42 _ = undefined
 
+parseOp43 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp43 4 0 regN = return $ EXT LONG regN
 parseOp43 4 regT regN= do
           imm <- next16
           ea <- parseEAMem regT regN
           return $ MOVEM LONG True ea [x | x <- [0 .. 15], testBit imm x]
 
-parseOp43 5 regT regN = parseOpV1 BYTE TAS regT regN
+parseOp43 5 regT regN = parseOpV1 BYTE TAS nothingT regT regN
 
 parseOp43 6 regT regN = do
   imm <- next16
@@ -724,10 +740,12 @@ parseOp43 dni regT regN = do
     3 -> return $ MOVE WORD ea SR
     _ -> undefined
 
+parseChk :: AType -> Int -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseChk t dni regT regN = do
   ea <- parseEA regT regN nothingT
   return $ CHK t ea dni
 
+parseOp4 :: (Eq a, Num a) => Int -> a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp4 dni 0 = do
   parseOp40 dni
 parseOp4 dni 1 = do
