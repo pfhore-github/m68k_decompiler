@@ -1,22 +1,25 @@
 {-# OPTIONS_GHC -Wno-missing-signatures #-}
 {-# LANGUAGE BinaryLiterals #-}
+
 module M68k.Parse where
 
 import           Control.Monad.State
-import           Data.Bits           (Bits (shiftL, shiftR, testBit, (.&.), (.|.)))
+import           Control.Monad.Trans.Maybe
+import           Data.Bits                 (Bits (shiftL, shiftR, testBit, (.&.), (.|.)))
 import           Data.Maybe
 import           Data.Word
-import Text.Printf
-import Control.Monad.Trans.Maybe
-import GHC.Float (castWord32ToFloat, castWord64ToDouble)
-import M68k.LongDouble
-import Util
+import           GHC.Float                 (castWord32ToFloat,
+                                            castWord64ToDouble)
+import           M68k.LongDouble
+import           Text.Printf
+import           Util
 
 data AType
   = BYTE
   | WORD
   | LONG
   deriving (Eq)
+
 instance Show AType where
   show BYTE = "B"
   show WORD = "W"
@@ -42,12 +45,12 @@ data Operand
   deriving (Eq)
 
 instance Show Operand where
-  show (DR n) = printf "%%D%d" n
-  show (AR n) = printf "%%A%d" n
-  show (ImmInt x) = printf "#%d" x
-  show CCR = "%CCR"
-  show SR = "%SR"
-  show (SpRG s) = printf "%%%s" s
+  show (DR n)      = printf "%%D%d" n
+  show (AR n)      = printf "%%A%d" n
+  show (ImmInt x)  = printf "#%d" x
+  show CCR         = "%CCR"
+  show SR          = "%SR"
+  show (SpRG s)    = printf "%%%s" s
   show (Address x) = show x
 
 instance PrintfArg Operand where
@@ -67,27 +70,33 @@ data MemOperand
 
 base2Str :: Int -> AddrBase -> String
 base2Str d (BasePC pc) = printf "0x%05X, %%PC" (d + pc)
-base2Str d BaseNone = printf "0x%05X" d
-base2Str d (BaseAR n) = printf "%d, %%A%d" d n
+base2Str d BaseNone    = printf "0x%05X" d
+base2Str d (BaseAR n)  = printf "%d, %%A%d" d n
 
 rn2Str :: Int -> String
 rn2Str n
   | n < 8 = printf "%%D%d" n
-  | otherwise = printf "%%A%d" (n-8)
+  | otherwise = printf "%%A%d" (n - 8)
 
 toScale :: Int -> Bool -> Int -> String
-toScale rn w = printf "%s%s << %d" (rn2Str rn) (if w then ".W" else "")
+toScale rn w =
+  printf
+    "%s%s << %d"
+    (rn2Str rn)
+    (if w
+       then ".W"
+       else "")
 
 indexStr :: Bool -> Maybe Int -> Bool -> Int -> String
-indexStr _ Nothing _ _ = ""
-indexStr True (Just rn) w cc = ", " ++ toScale rn w cc
+indexStr _ Nothing _ _        = ""
+indexStr True (Just rn) w cc  = ", " ++ toScale rn w cc
 indexStr False (Just rn) w cc = toScale rn w cc ++ ", "
 
 instance Show MemOperand where
   show (UnRefAR a) = printf "(%%A%d)" a
   show (UnRefInc a) = printf "(%%A%d)+" a
   show (UnRefDec a) = printf "-(%%A%d)" a
-  show (Offset16 a base) = printf "(%s)" ( base2Str a base)
+  show (Offset16 a base) = printf "(%s)" (base2Str a base)
   show (Offset8 bd base w rn cc) =
     printf "(%s, %s)" (base2Str bd base) $ toScale rn w cc
   show (Indirect bd base w rnp cc) =
@@ -101,7 +110,6 @@ instance Show MemOperand where
 instance PrintfArg MemOperand where
   formatArg x = formatArg (show x)
 
-
 getRn :: Int -> Operand
 getRn d =
   if d > 7
@@ -112,6 +120,7 @@ data BopSc
   = BImm Int
   | BReg Int
   deriving (Eq)
+
 instance Show BopSc where
   show (BImm n) = printf "#%d" n
   show (BReg n) = printf "%%D%d" n
@@ -119,46 +128,53 @@ instance Show BopSc where
 instance PrintfArg BopSc where
   formatArg x = formatString (show x)
 
-data AFType = FInt AType | FSINGLE | FDOUBLE | FEXT | FPACKED
+data AFType
+  = FInt AType
+  | FSINGLE
+  | FDOUBLE
+  | FEXT
+  | FPACKED
   deriving (Show, Eq)
 
 instance PrintfArg AFType where
-  formatArg x = formatString (
-    case x of
-      FInt t ->  printf "%v" t
-      FSINGLE -> "S"
-      FDOUBLE -> "D"
-      FEXT -> "X"
-      FPACKED -> "P"
-     )
+  formatArg x =
+    formatString
+      (case x of
+         FInt t  -> printf "%v" t
+         FSINGLE -> "S"
+         FDOUBLE -> "D"
+         FEXT    -> "X"
+         FPACKED -> "P")
 
 nothingT :: MaybeT (State (Int, [Word8])) a
 nothingT = mzero
 
 toAFType :: Int -> AFType
-toAFType n = case n of
-  0 -> FInt LONG
-  1 -> FSINGLE
-  2 -> FEXT
-  3 -> FPACKED
-  4 -> FInt WORD
-  5 -> FDOUBLE
-  6 -> FInt BYTE
-  7 -> FPACKED
-  _ -> undefined
+toAFType n =
+  case n of
+    0 -> FInt LONG
+    1 -> FSINGLE
+    2 -> FEXT
+    3 -> FPACKED
+    4 -> FInt WORD
+    5 -> FDOUBLE
+    6 -> FInt BYTE
+    7 -> FPACKED
+    _ -> undefined
 
-data FpuOperand =
-  FpuRn Int |
-  FpuOperandInt Operand |
-  FpuOperandFlt MemOperand |
-  FpuImm LongDouble
+data FpuOperand
+  = FpuRn Int
+  | FpuOperandInt Operand
+  | FpuOperandFlt MemOperand
+  | FpuImm LongDouble
   deriving (Eq)
 
 instance Show FpuOperand where
-  show (FpuRn n) = printf "%%FP%d" n
+  show (FpuRn n)         = printf "%%FP%d" n
   show (FpuOperandInt t) = show t
   show (FpuOperandFlt t) = show t
-  show (FpuImm d) = show d
+  show (FpuImm d)        = show d
+
 instance PrintfArg FpuOperand where
   formatArg x = formatArg (show x)
 
@@ -325,68 +341,79 @@ next8 :: MaybeT (State (Int, [Word8])) Int
 next8 = do
   (s, x) <- get
   if null x
-    then
-      MaybeT $ do return Nothing
+    then MaybeT $ do return Nothing
     else do
-      put (s+1, tail x)
+      put (s + 1, tail x)
       return (fromIntegral $ head x :: Int)
 
 next16 =
   let
-  in do
-      high <- next8
-      low <- next8
-      return $ high `shiftL` 8 .|. low
+   in do high <- next8
+         low <- next8
+         return $ high `shiftL` 8 .|. low
 
 next32 = do
   high <- next16
   low <- next16
   return $ high `shiftL` 16 .|. low
 
-nextX t = if t == LONG then next32 else next16
+nextX t =
+  if t == LONG
+    then next32
+    else next16
 
 parseEaEx :: Int -> AddrBase -> MaybeT (State (Int, [Word8])) MemOperand
 parseEaEx nw base
-  | not ( testBit nw 8) = do return $ Offset8 (toS8 (getBit nw 0 0xff)) base ext index cc
+  | not (testBit nw 8) = do
+    return $ Offset8 (toS8 (getBit nw 0 0xff)) base ext index cc
   | testBit nw 3 = nothingT
   | getBit nw 6 3 == 3 = nothingT
   | od_i == 0 && isPost = nothingT
   | otherwise = do
-      bd <-
-        case getBit nw 4 3 of
-          1 -> return 0
-          2 -> next16
-          3 -> next32
-          _ -> nothingT
-      od <-
-        case od_i of
-          2 -> next16
-          3 -> next32
-          _ -> return 0
-      return $ if od_i == 0
+    bd <-
+      case getBit nw 4 3 of
+        1 -> return 0
+        2 -> toS16 <$> next16
+        3 -> toS32 <$> next32
+        _ -> nothingT
+    od <-
+      case od_i of
+        2 -> toS16 <$> next16
+        3 -> toS32 <$> next32
+        _ -> return 0
+    return $
+      if od_i == 0
         then Indirect bd base_p ext index_p cc
         else (if isPost
-               then PostIndex
-               else PreIndex )
-             bd base_p ext index_p cc od
-        where index = getBit nw 12 15
-              ext = testBit nw 11
-              cc = getBit nw 9 3
-              od_i = getBit nw 0 3
-              isPost = testBit nw 2
-              index_p =
-                if testBit nw 6
-                then Nothing
-                else Just index
-              base_p =
-                if testBit nw 7
-                then BaseNone
-                else base
+                then PostIndex
+                else PreIndex)
+               bd
+               base_p
+               ext
+               index_p
+               cc
+               od
+  where
+    index = getBit nw 12 15
+    ext = testBit nw 11
+    cc = getBit nw 9 3
+    od_i = getBit nw 0 3
+    isPost = testBit nw 2
+    index_p =
+      if testBit nw 6
+        then Nothing
+        else Just index
+    base_p =
+      if testBit nw 7
+        then BaseNone
+        else base
 
 isSpecialEA regT regN = regT == 7 && regN == 4
 
-
-parseEA :: Int -> Int -> MaybeT (State (Int, [Word8])) Operand
+parseEA ::
+     Int
+  -> Int
+  -> MaybeT (State (Int, [Word8])) Operand
   -> MaybeT (State (Int, [Word8])) Operand
 parseEA 0 regN _ = do
   return $ DR regN
@@ -396,7 +423,6 @@ parseEA 7 4 other = other
 parseEA n r _ = do
   mem <- parseEAMem n r
   return $ Address mem
-
 
 parseEAMem :: Int -> Int -> MaybeT (State (Int, [Word8])) MemOperand
 parseEAMem 2 regN = do
@@ -423,7 +449,6 @@ parseEAMem 7 3 = do
   pc <- lift getPC
   nw <- next16
   parseEaEx nw (BasePC pc)
-
 parseEAMem _ _ = MaybeT $ do return Nothing
 
 nextOpX :: AType -> MaybeT (State (Int, [Word8])) Int
@@ -449,21 +474,39 @@ parseOpCmp2 t regT regN = do
   let rn = getBit nw 12 15
   return $ op t ea rn
 
-parseBitTestCommon :: Int -> Int -> (AType -> Operand -> t -> b) -> t -> MaybeT (State (Int, [Word8])) b
+parseBitTestCommon ::
+     Int
+  -> Int
+  -> (AType -> Operand -> t -> b)
+  -> t
+  -> MaybeT (State (Int, [Word8])) b
 parseBitTestCommon regT regN op_c pos = do
   let t =
         if regT == 0
           then LONG
           else BYTE
-  op <- parseEA regT regN (ImmInt <$> next16 )
+  op <- parseEA regT regN (ImmInt <$> next16)
   return $ op_c t op pos
 
-parseBitTest :: Int -> Int -> (AType -> Operand -> BopSc -> b) -> MaybeT (State (Int, [Word8])) b
+parseBitTest ::
+     Int
+  -> Int
+  -> (AType -> Operand -> BopSc -> b)
+  -> MaybeT (State (Int, [Word8])) b
 parseBitTest regT regN op_c = do
   x <- next16
-  parseBitTestCommon regT regN op_c $ BImm (if x == 0 then 8 else x)
+  parseBitTestCommon regT regN op_c $
+    BImm
+      (if x == 0
+         then 8
+         else x)
 
-parseBitTest2 :: Int -> Int -> (AType -> Operand -> BopSc -> b) -> Int -> MaybeT (State (Int, [Word8])) b
+parseBitTest2 ::
+     Int
+  -> Int
+  -> (AType -> Operand -> BopSc -> b)
+  -> Int
+  -> MaybeT (State (Int, [Word8])) b
 parseBitTest2 regT regN op_c dn = parseBitTestCommon regT regN op_c (BReg dn)
 
 parseMoveP :: AType -> Int -> Int -> Bool -> MaybeT (State (Int, [Word8])) Op
@@ -492,11 +535,11 @@ doOp2 f t dstM immM = do
   dst <- dstM
   return $ f t dst o
 
-toAType :: (Eq a, Num a) => a -> AType
+toAType :: (Eq a, Num a, Show a) => a -> AType
 toAType 0 = BYTE
 toAType 1 = WORD
 toAType 2 = LONG
-toAType _ = undefined
+toAType n = error ("unknown type at " ++ show n)
 
 toBitOp :: (Eq a, Num a) => a -> AType -> Operand -> BopSc -> Op
 toBitOp 0 = BTST
@@ -511,18 +554,20 @@ parseOp0 dni opi regT regN
     let t = toAType opi
         bitOp = toBitOp opi
         ea = parseEA regT regN nothingT
-        dst = parseEA regT regN (case opi of
-                                   0 -> return CCR
-                                   1 -> return SR
-                                   _ -> nothingT
-                                )
-              
-        src = parseEA regT regN ( ImmInt <$> nextX t )
+        dst =
+          parseEA
+            regT
+            regN
+            (case opi of
+               0 -> return CCR
+               1 -> return SR
+               _ -> nothingT)
+        src = parseEA regT regN (ImmInt <$> nextX t)
      in case dni of
           0 -> doOp2 ORI t dst $ nextX t
           1 -> doOp2 ANDI t dst $ nextX t
           2 -> doOp2 SUBI t ea $ nextX t
-          3 -> doOp2 ADDI t ea  $ nextX t
+          3 -> doOp2 ADDI t ea $ nextX t
           4 -> parseBitTest regT regN bitOp
           5 -> doOp2 EORI t dst $ nextX t
           6 -> doOp2 CMPI t src $ nextX t
@@ -531,7 +576,7 @@ parseOp0 dni opi regT regN
   | opi == 3 = do
     case dni of
       3 -> return ILLEGAL
-      4 -> parseBitTest regT regN BSET      
+      4 -> parseBitTest regT regN BSET
       _
         | dni < 3 -> parseOpCmp2 (toAType dni) regT regN
         | otherwise -> parseCas (toAType $ dni - 5) regT regN
@@ -546,16 +591,30 @@ parseOp0 dni opi regT regN
              (opi < 6)
       else parseBitTest2 regT regN (toBitOp $ opi - 4) dni
 
-parseOpMove :: AType -> Int -> Int -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOpMove ::
+     AType -> Int -> Int -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOpMove t dstT dstN srcT srcN = do
-  srcEA <- parseEA srcT srcN ( ImmInt <$> ( if t == LONG then next32 else next16 ) )
+  srcEA <-
+    parseEA
+      srcT
+      srcN
+      (ImmInt <$>
+       (if t == LONG
+          then next32
+          else next16))
   dstEA <- parseEA dstT dstN nothingT
   return $
     if dstT == 1
       then MOVEA t srcEA dstN
       else MOVE t srcEA dstEA
 
-parseOpV1 :: t -> (t -> Operand -> b) -> MaybeT (State (Int, [Word8])) Operand -> Int -> Int -> MaybeT (State (Int, [Word8])) b
+parseOpV1 ::
+     t
+  -> (t -> Operand -> b)
+  -> MaybeT (State (Int, [Word8])) Operand
+  -> Int
+  -> Int
+  -> MaybeT (State (Int, [Word8])) b
 parseOpV1 t opc e regT regN = opc t <$> parseEA regT regN e
 
 movecName :: (Eq a, Num a) => a -> String
@@ -577,7 +636,8 @@ movecName x
   | x == 0x807 = "SRP"
   | otherwise = "???"
 
-parseOp40 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp40 ::
+     (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp40 0 = parseOpV1 BYTE NEGX nothingT
 parseOp40 1 = parseOpV1 BYTE CLR nothingT
 parseOp40 2 = parseOpV1 BYTE NEG nothingT
@@ -591,7 +651,8 @@ parseOp40 5 = parseOpV1 BYTE TST $ ImmInt <$> next16
 parseOp40 6 = parseMul
 parseOp40 _ = undefined
 
-parseOp41 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp41 ::
+     (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp41 0 = parseOpV1 WORD NEGX nothingT
 parseOp41 1 = parseOpV1 WORD CLR nothingT
 parseOp41 2 = parseOpV1 WORD NEG nothingT
@@ -658,9 +719,9 @@ parse0471 2 regN = LINK regN <$> next16
 parse0471 3 regN = do
   return $ UNLK regN
 parse0471 4 regN = do
-  return $ MOVE LONG (AR regN) (SpRG "USR")
+  return $ MOVE LONG (AR regN) (SpRG "USP")
 parse0471 5 regN = do
-  return $ MOVE LONG (SpRG "USR") (AR regN)
+  return $ MOVE LONG (SpRG "USP") (AR regN)
 parse0471 6 0 = do
   return RESET
 parse0471 6 1 = do
@@ -684,11 +745,12 @@ parse0471 7 regN = do
   return $
     case regN of
       2 -> MOVEC False rn $ movecName cc
-      3 -> MOVEC True rn  $ movecName cc
+      3 -> MOVEC True rn $ movecName cc
       _ -> ILLEGAL
 parse0471 _ _ = undefined
 
-parseOp42 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp42 ::
+     (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp42 0 = parseOpV1 LONG NEGX nothingT
 parseOp42 1 = parseOpV1 LONG CLR nothingT
 parseOp42 2 = parseOpV1 LONG NEG nothingT
@@ -713,24 +775,21 @@ parseOp42 7 =
         return $ JSR ea)
 parseOp42 _ = undefined
 
-parseOp43 :: (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp43 ::
+     (Eq a, Num a) => a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp43 4 0 regN = return $ EXT LONG regN
-parseOp43 4 regT regN= do
-          imm <- next16
-          ea <- parseEAMem regT regN
-          return $ MOVEM LONG True ea [x | x <- [0 .. 15], testBit imm x]
-
+parseOp43 4 regT regN = do
+  imm <- next16
+  ea <- parseEAMem regT regN
+  return $ MOVEM LONG True ea [x | x <- [0 .. 15], testBit imm x]
 parseOp43 5 regT regN = parseOpV1 BYTE TAS nothingT regT regN
-
 parseOp43 6 regT regN = do
   imm <- next16
   ea <- parseEAMem regT regN
   return $ MOVEM LONG False ea [x | x <- [0 .. 15], testBit imm x]
-
 parseOp43 7 regT regN = do
   ea <- parseEAMem regT regN
   return $ JMP ea
-
 parseOp43 dni regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next16)
   case dni of
@@ -742,10 +801,11 @@ parseOp43 dni regT regN = do
 
 parseChk :: AType -> Int -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseChk t dni regT regN = do
-  ea <- parseEA regT regN nothingT
+  ea <- parseEA regT regN $ ImmInt <$> nextX t
   return $ CHK t ea dni
 
-parseOp4 :: (Eq a, Num a) => Int -> a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOp4 ::
+     (Eq a, Num a) => Int -> a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp4 dni 0 = do
   parseOp40 dni
 parseOp4 dni 1 = do
@@ -791,7 +851,11 @@ parseOp5 dni opi regT regN
           _ -> Scc cc <$> ea
   | opi < 3 = ADDQ (toAType opi) immi <$> parseEA regT regN nothingT
   | otherwise = SUBQ (toAType $ opi - 4) immi <$> parseEA regT regN nothingT
-  where immi = if dni == 0 then 8 else dni
+  where
+    immi =
+      if dni == 0
+        then 8
+        else dni
 
 parseOp6 op = do
   let cc = getBit op 8 15
@@ -810,11 +874,11 @@ parseOp6 op = do
       _ -> Bcc cc target
 
 parseOp8 dn 3 regT regN = do
-  ea <- parseEA regT regN (ImmInt <$> next32)
+  ea <- parseEA regT regN (ImmInt <$> next16)
   return $ DIVUW ea dn
 parseOp8 dn 7 regT regN = do
-  ea <- parseEA regT regN (ImmInt <$> next32)
-  return $ DIVUW ea dn
+  ea <- parseEA regT regN (ImmInt <$> next16)
+  return $ DIVSW ea dn
 parseOp8 dn 4 0 regN = do
   return $ SBCD_REG dn regN
 parseOp8 dn 4 1 regN = do
@@ -825,11 +889,11 @@ parseOp8 dn 6 0 regN = UNPK_REG regN dn <$> next16
 parseOp8 dn 6 1 regN = UNPK_MEM regN dn <$> next16
 parseOp8 dn n regT regN
   | n < 3 = do
-      ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-      return $ OR (toAType n) ea dn
+    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
+    return $ OR (toAType n) ea dn
   | otherwise = do
-      ea <- parseEAMem regT regN
-      return $ OR_TO_MEM (toAType n) dn ea
+    ea <- parseEAMem regT regN
+    return $ OR_TO_MEM (toAType $ n - 4) dn ea
 
 parseOp9 dn 3 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next16)
@@ -837,17 +901,15 @@ parseOp9 dn 3 regT regN = do
 parseOp9 dn 7 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next32)
   return $ SUBA LONG ea dn
-parseOp9 dn n 0 regN = do
-  return $ SUBX_REG (toAType $ n - 4) dn regN
-parseOp9 dn n 1 regN = do
-  return $ SUBX_MEM (toAType $ n - 4) dn regN
 parseOp9 dn n regT regN
   | n < 3 = do
-      ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-      return $ SUB (toAType n) ea dn
+    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
+    return $ SUB (toAType n) ea dn
+  | regT == 0 = do return $ SUBX_REG (toAType $ n - 4) dn regN
+  | regT == 1 = do return $ SUBX_MEM (toAType $ n - 4) dn regN
   | otherwise = do
-      ea <- parseEAMem regT regN
-      return $ SUB_TO_MEM (toAType $ n - 4) dn ea
+    ea <- parseEAMem regT regN
+    return $ SUB_TO_MEM (toAType $ n - 4) dn ea
 
 parseOpB dn 3 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next16)
@@ -857,7 +919,7 @@ parseOpB dn 7 regT regN = do
   return $ CMPA LONG ea dn
 parseOpB dn n regT regN
   | n < 3 = do
-    ea <- parseEA regT regN  (ImmInt <$> nextX (toAType n))
+    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
     return $ CMP (toAType n) ea dn
   | otherwise = do
     if regT == 1
@@ -898,17 +960,15 @@ parseOpD dn 3 regT regN = do
 parseOpD dn 7 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next32)
   return $ ADDA LONG ea dn
-parseOpD dn n 0 regN
-  | n >= 4 = do return $ ADDX_REG (toAType $ n - 4) regN dn
-parseOpD dn n 1 regN
-  | n >= 4 = do return $ ADDX_MEM (toAType $ n - 4) regN dn
 parseOpD dn n regT regN
   | n < 3 = do
-      ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-      return $ ADD (toAType n) ea dn
+    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
+    return $ ADD (toAType n) ea dn
+  | regT == 0 = do return $ ADDX_REG (toAType $ n - 4) regN dn
+  | regT == 1 = do return $ ADDX_MEM (toAType $ n - 4) regN dn
   | otherwise = do
-      ea <- parseEAMem regT regN
-      return $ ADD_TO_MEM (toAType $ n - 4) dn ea
+    ea <- parseEAMem regT regN
+    return $ ADD_TO_MEM (toAType $ n - 4) dn ea
 
 parseShift dir t regT dn regN
   | regT == 0 || regT == 4 = do
@@ -917,8 +977,8 @@ parseShift dir t regT dn regN
          then ASR
          else ASL)
         t
-        (testBit regT 2)
-        dn
+        isReg
+        sc
         regN
   | regT == 1 || regT == 5 = do
     return $
@@ -926,8 +986,8 @@ parseShift dir t regT dn regN
          then LSR
          else LSL)
         t
-        (testBit regT 2)
-        dn
+        isReg
+        sc
         regN
   | regT == 2 || regT == 6 = do
     return $
@@ -935,8 +995,8 @@ parseShift dir t regT dn regN
          then ROXR
          else ROXL)
         t
-        (testBit regT 2)
-        dn
+        isReg
+        sc
         regN
   | otherwise = do
     return $
@@ -944,9 +1004,15 @@ parseShift dir t regT dn regN
          then ROR
          else ROL)
         t
-        (testBit regT 2)
-        dn
+        isReg
+        sc
         regN
+  where
+    isReg = testBit regT 2
+    sc =
+      if not isReg && dn == 0
+        then 8
+        else dn
 
 parseOpE 0 3 regT regN = ASR_EA <$> parseEAMem regT regN
 parseOpE 1 3 regT regN = LSR_EA <$> parseEAMem regT regN
@@ -1013,95 +1079,96 @@ parseOpFPULoad rm regT regN fpm fpn opc = do
         ea <- parseEA regT regN (ImmInt <$> nextX t)
         return (at, FpuOperandInt ea)
       readFpuEA x =
-        if isSpecialEA regT regN then
-         do
-           v <- case x of
-             FSINGLE -> do
-               imm <- next32
-               return . fromSingle . castWord32ToFloat $ fromIntegral imm
-             FDOUBLE -> do
-               imm <- next64
-               return . fromDouble . castWord64ToDouble $ fromIntegral imm
-             FEXT -> do
-               imm1 <- next32
-               frac <- next64
-               let e = imm1 `shiftR` 16
-               return . fromExtWord e $ fromIntegral frac
-             FPACKED -> do
-               imm1 <- next32
-               frac <- next64
-               let e = imm1 `shiftR` 16
-               return . fromPacked e $ fromIntegral frac
-           return (x, FpuImm v)
-        else do
-          ea <- parseEAMem regT regN
-          return (x, FpuOperandFlt ea)
-  (t, src) <- if rm then
-                return (FEXT, FpuRn fpm)
-              else
-                readFpuEA $ toAFType fpm
-  return (
-    if between opc 48 55 then
-      FSINCOS t src (opc .&. 7) fpn
-    else if opc == 58 then
-      FTST t src
-    else maybe ILLEGAL (\x -> FOp x t src fpn)
-         ( case opc of
-             0b0000000 -> Just "FMOVE"
-             0b0000001 -> Just "FINT"
-             0b0000010 -> Just "FSINH"
-             0b0000011 -> Just "FINTZ"
-             0b0000100 -> Just "FSQRT"
-             0b0000110 -> Just "FLOGNP1"
-             0b0001000 -> Just "FETOXM1"
-             0b0001001 -> Just "FTANH"
-             0b0001010 -> Just "FATAN"
-             0b0001100 -> Just "FASIN"
-             0b0001101 -> Just "FATANH"
-             0b0001110 -> Just "FSIN"
-             0b0001111 -> Just "FTAN"
-             0b0010000 -> Just "FETOX"
-             0b0010001 -> Just "FTWOTOX"
-             0b0010010 -> Just "FTENTOX"
-             0b0010100 -> Just "FLOGN"
-             0b0010101 -> Just "FLOG10"
-             0b0010110 -> Just "FLOG2"
-             0b0011000 -> Just "FABS"
-             0b0011001 -> Just "FCOSH"
-             0b0011010 -> Just "FNEG"
-             0b0011100 -> Just "FACOS"
-             0b0011101 -> Just "FCOS"
-             0b0011110 -> Just "FGETEXP"
-             0b0011111 -> Just "FGETMAN"
-             0b0100000 -> Just "FDIV"
-             0b0100001 -> Just "FMOD"
-             0b0100010 -> Just "FADD"
-             0b0100011 -> Just "FMUL"
-             0b0100100 -> Just "FSGLDIV"
-             0b0100101 -> Just "FREM"
-             0b0100110 -> Just "FSCALE"
-             0b0100111 -> Just "FSGLMUL"
-             0b0101000 -> Just "FSUB"
-             0b0111000 -> Just "FCMP"
-             0b1000000 -> Just "FSMOVE"
-             0b1000001 -> Just "FSSQRT"
-             0b1000100 -> Just "FDMOVE"
-             0b1000101 -> Just "FDSQRT"
-             0b1011000 -> Just "FSABS"
-             0b1011010 -> Just "FSNEG"
-             0b1011100 -> Just "FDABS"
-             0b1011110 -> Just "FDNEG"
-             0b1100000 -> Just "FSDIV"
-             0b1100010 -> Just "FSADD"
-             0b1100011 -> Just "FSMUL"
-             0b1100100 -> Just "FDDIV"
-             0b1100110 -> Just "FDADD"
-             0b1100111 -> Just "FDMUL"
-             0b1101000 -> Just "FSSUB"
-             0b1101100 -> Just "FDSUB"
-             _ -> Nothing
-         )
-    )
+        if isSpecialEA regT regN
+          then do
+            v <-
+              case x of
+                FSINGLE -> do
+                  imm <- next32
+                  return . fromSingle . castWord32ToFloat $ fromIntegral imm
+                FDOUBLE -> do
+                  imm <- next64
+                  return . fromDouble . castWord64ToDouble $ fromIntegral imm
+                FEXT -> do
+                  imm1 <- next32
+                  frac <- next64
+                  let e = imm1 `shiftR` 16
+                  return . fromExtWord e $ fromIntegral frac
+                FPACKED -> do
+                  imm1 <- next32
+                  frac <- next64
+                  let e = imm1 `shiftR` 16
+                  return . fromPacked e $ fromIntegral frac
+            return (x, FpuImm v)
+          else do
+            ea <- parseEAMem regT regN
+            return (x, FpuOperandFlt ea)
+  (t, src) <-
+    if rm
+      then return (FEXT, FpuRn fpm)
+      else readFpuEA $ toAFType fpm
+  return
+    (if between opc 48 55
+       then FSINCOS t src (opc .&. 7) fpn
+       else if opc == 58
+              then FTST t src
+              else maybe
+                     ILLEGAL
+                     (\x -> FOp x t src fpn)
+                     (case opc of
+                        0b0000000 -> Just "FMOVE"
+                        0b0000001 -> Just "FINT"
+                        0b0000010 -> Just "FSINH"
+                        0b0000011 -> Just "FINTZ"
+                        0b0000100 -> Just "FSQRT"
+                        0b0000110 -> Just "FLOGNP1"
+                        0b0001000 -> Just "FETOXM1"
+                        0b0001001 -> Just "FTANH"
+                        0b0001010 -> Just "FATAN"
+                        0b0001100 -> Just "FASIN"
+                        0b0001101 -> Just "FATANH"
+                        0b0001110 -> Just "FSIN"
+                        0b0001111 -> Just "FTAN"
+                        0b0010000 -> Just "FETOX"
+                        0b0010001 -> Just "FTWOTOX"
+                        0b0010010 -> Just "FTENTOX"
+                        0b0010100 -> Just "FLOGN"
+                        0b0010101 -> Just "FLOG10"
+                        0b0010110 -> Just "FLOG2"
+                        0b0011000 -> Just "FABS"
+                        0b0011001 -> Just "FCOSH"
+                        0b0011010 -> Just "FNEG"
+                        0b0011100 -> Just "FACOS"
+                        0b0011101 -> Just "FCOS"
+                        0b0011110 -> Just "FGETEXP"
+                        0b0011111 -> Just "FGETMAN"
+                        0b0100000 -> Just "FDIV"
+                        0b0100001 -> Just "FMOD"
+                        0b0100010 -> Just "FADD"
+                        0b0100011 -> Just "FMUL"
+                        0b0100100 -> Just "FSGLDIV"
+                        0b0100101 -> Just "FREM"
+                        0b0100110 -> Just "FSCALE"
+                        0b0100111 -> Just "FSGLMUL"
+                        0b0101000 -> Just "FSUB"
+                        0b0111000 -> Just "FCMP"
+                        0b1000000 -> Just "FSMOVE"
+                        0b1000001 -> Just "FSSQRT"
+                        0b1000100 -> Just "FDMOVE"
+                        0b1000101 -> Just "FDSQRT"
+                        0b1011000 -> Just "FSABS"
+                        0b1011010 -> Just "FSNEG"
+                        0b1011100 -> Just "FDABS"
+                        0b1011110 -> Just "FDNEG"
+                        0b1100000 -> Just "FSDIV"
+                        0b1100010 -> Just "FSADD"
+                        0b1100011 -> Just "FSMUL"
+                        0b1100100 -> Just "FDDIV"
+                        0b1100110 -> Just "FDADD"
+                        0b1100111 -> Just "FDMUL"
+                        0b1101000 -> Just "FSSUB"
+                        0b1101100 -> Just "FDSUB"
+                        _         -> Nothing))
 
 parseOpFPUStore regT regN 0 fpn _ = do
   ea <- parseEA regT regN nothingT
@@ -1132,10 +1199,19 @@ parseOpFPUStore _ _ _ _ _ = nothingT
 parseOpF10_0 regT regN fpm fpn opc
   | fpm /= 7 = parseOpFPULoad False regT regN fpm fpn opc
   | otherwise = nothingT
-parseOpF10_2 _ _ 7 fpn opc = do return $ FMOVECR opc fpn
+
+parseOpF10_2 _ _ 7 fpn opc = do
+  return $ FMOVECR opc fpn
 parseOpF10_2 regT regN fpm fpn opc = parseOpFPULoad False regT regN fpm fpn opc
 
-parseOpF10_3 :: (Eq a, Num a) => Int -> Int -> a -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
+parseOpF10_3 ::
+     (Eq a, Num a)
+  => Int
+  -> Int
+  -> a
+  -> Int
+  -> Int
+  -> MaybeT (State (Int, [Word8])) Op
 parseOpF10_3 = parseOpFPUStore
 
 parseOpF10_4_5 regT regN nw bit13 = do
@@ -1147,35 +1223,34 @@ parseOpF10_4_5 regT regN nw bit13 = do
 
 parseOpF10_6 regT regN nw = do
   ea <- parseEAMem regT regN
-  if testBit nw 12 then
-    if testBit nw 11 then
-      let dn = getBit nw 4 7
-      in return $ FMOVEMD False ea dn
-    else
-      let bits = getBit nw 0 0xff
-      in return $ FMOVEMS False ea [n | n <- [0..7], testBit bits (7-n)]
-  else
-    return ILLEGAL
+  if testBit nw 12
+    then if testBit nw 11
+           then let dn = getBit nw 4 7
+                 in return $ FMOVEMD False ea dn
+           else let bits = getBit nw 0 0xff
+                 in return $
+                    FMOVEMS False ea [n | n <- [0 .. 7], testBit bits (7 - n)]
+    else return ILLEGAL
 
 parseOpF10_7 4 regN nw
   | testBit nw 12 = return ILLEGAL
   | otherwise = do
-      ea <- parseEAMem 4 regN
-      if testBit nw 11
-        then let dn = getBit nw 4 7
-             in return $ FMOVEMD True ea dn
-        else let bits = getBit nw 0 0xff
-             in return $ FMOVEMS True ea
-                [n | n <- reverse [0..7], testBit bits n]
+    ea <- parseEAMem 4 regN
+    if testBit nw 11
+      then let dn = getBit nw 4 7
+            in return $ FMOVEMD True ea dn
+      else let bits = getBit nw 0 0xff
+            in return $
+               FMOVEMS True ea [n | n <- reverse [0 .. 7], testBit bits n]
 parseOpF10_7 regT regN nw
   | testBit nw 12 = do
-      ea <- parseEAMem regT regN
-      if testBit nw 11
-        then let dn = getBit nw 4 7
-             in return $ FMOVEMD True ea dn
-        else let bits = getBit nw 0 0xff
-             in return $ FMOVEMS False ea
-                [n | n <- [0..7], testBit bits (7-n)]
+    ea <- parseEAMem regT regN
+    if testBit nw 11
+      then let dn = getBit nw 4 7
+            in return $ FMOVEMD True ea dn
+      else let bits = getBit nw 0 0xff
+            in return $
+               FMOVEMS False ea [n | n <- [0 .. 7], testBit bits (7 - n)]
   | otherwise = return ILLEGAL
 
 parseOpF10 regT regN = do
@@ -1198,34 +1273,31 @@ parseOpF11 1 regN = do
   pc <- lift getPC
   disp <- next16
   return $ FDBcc (getBit nw 0 0x3F) regN (disp + pc)
-
 parseOpF11 7 2 = do
   nw <- next16
-  FTRAPcc  (getBit nw 0 0x3F) <$> next16
-
+  FTRAPcc (getBit nw 0 0x3F) <$> next16
 parseOpF11 7 3 = do
   nw <- next16
-  FTRAPcc  (getBit nw 0 0x3F) <$> next32
-
+  FTRAPcc (getBit nw 0 0x3F) <$> next32
 parseOpF11 7 4 = do
   nw <- next16
-  return $ FTRAPcc  (getBit nw 0 0x3F) 0
-
+  return $ FTRAPcc (getBit nw 0 0x3F) 0
 parseOpF11 regT regN = do
   nw <- next16
   ea <- parseEA regT regN nothingT
   return $ FScc (getBit nw 0 0x3F) ea
 
-parseOpF12 0 = do return FNOP
+parseOpF12 0 = do
+  return FNOP
 parseOpF12 cc = do
   pc <- lift getPC
   offset <- next16
-  return $ FBcc cc (pc+offset)
+  return $ FBcc cc (pc + offset)
 
 parseOpF13 cc = do
   pc <- lift getPC
   offset <- next32
-  return $ FBcc cc (pc+offset)
+  return $ FBcc cc (pc + offset)
 
 parseOpF14 regT regN = do
   ea <- parseEAMem regT regN
@@ -1234,7 +1306,6 @@ parseOpF14 regT regN = do
 parseOpF15 regT regN = do
   ea <- parseEAMem regT regN
   return $ FRESTORE ea
-
 
 parseOpF2x 0 _ _ = return ILLEGAL
 parseOpF2x 4 0 an = return $ PFLUSHN an
@@ -1279,9 +1350,10 @@ parseOpMain op
   | h == 4 = parseOp4 dn opi regT regN
   | h == 5 = parseOp5 dn opi regT regN
   | h == 6 = parseOp6 op
-  | h == 7 = let imm = toS8 $ getBit op 0 0xff
-             in return $ MOVEQ imm dn
-  | h == 8  = parseOp8 dn opi regT regN
+  | h == 7 =
+    let imm = toS8 $ getBit op 0 0xff
+     in return $ MOVEQ imm dn
+  | h == 8 = parseOp8 dn opi regT regN
   | h == 9 = parseOp9 dn opi regT regN
   | h == 10 = return $ SYS op
   | h == 11 = parseOpB dn opi regT regN
@@ -1307,30 +1379,30 @@ parseOpMain op
 parseOp :: Int -> [Word8] -> (Int, (Op, Int))
 parseOp pc opsv =
   let (o, (next, _)) =
-        runState ( runMaybeT $ do
-                     op <- next16
-                     parseOpMain op
-                 ) (pc, drop pc opsv)
+        runState
+          (runMaybeT $ do
+             op <- next16
+             parseOpMain op)
+          (pc, drop pc opsv)
    in (pc, (fromMaybe ILLEGAL o, next))
-
 
 getLabels [] = []
 getLabels ((_, op):ss) =
   (case op of
-    LEA (Offset16 s (BasePC n)) _ -> [s+n]
-    LEA (Offset8 s (BasePC n) _ _ _) _ -> [s+n]
-    LEA (Indirect s (BasePC n) _ _ _) _ -> [s+n]
-    LEA (PreIndex s (BasePC n) _ _ _ _) _ -> [s+n]
-    LEA (PostIndex s (BasePC n) _ _ _ _) _ -> [s+n]
-    DBcc _ _ x -> [x]
-    Bcc _ x -> [x]
-    BRA x -> [x]
-    JMP (Offset16 s (BasePC n)) -> [s+n]
-    JMP (Offset8 s (BasePC n) _ _ _) -> [s+n]
-    JMP (Indirect s (BasePC n) _ _ _) -> [s+n]
-    JMP (PreIndex s (BasePC n) _ _ _ _) -> [s+n]
-    JMP (PostIndex s (BasePC n) _ _ _ _) -> [s+n]
-    FDBcc _ _ x -> [x]
-    FBcc _ x -> [x]
-    _ -> []
-  ) ++ getLabels ss
+     LEA (Offset16 s (BasePC n)) _          -> [s + n]
+     LEA (Offset8 s (BasePC n) _ _ _) _     -> [s + n]
+     LEA (Indirect s (BasePC n) _ _ _) _    -> [s + n]
+     LEA (PreIndex s (BasePC n) _ _ _ _) _  -> [s + n]
+     LEA (PostIndex s (BasePC n) _ _ _ _) _ -> [s + n]
+     DBcc _ _ x                             -> [x]
+     Bcc _ x                                -> [x]
+     BRA x                                  -> [x]
+     JMP (Offset16 s (BasePC n))            -> [s + n]
+     JMP (Offset8 s (BasePC n) _ _ _)       -> [s + n]
+     JMP (Indirect s (BasePC n) _ _ _)      -> [s + n]
+     JMP (PreIndex s (BasePC n) _ _ _ _)    -> [s + n]
+     JMP (PostIndex s (BasePC n) _ _ _ _)   -> [s + n]
+     FDBcc _ _ x                            -> [x]
+     FBcc _ x                               -> [x]
+     _                                      -> []) ++
+  getLabels ss

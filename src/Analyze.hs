@@ -2,8 +2,8 @@
 
 module Analyze where
 
-import           CExpr
-import           CStmt
+import           CExpr()
+import           CStmt()
 import           Data.Maybe
 
 import           Env
