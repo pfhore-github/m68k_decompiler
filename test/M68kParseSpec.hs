@@ -7,7 +7,7 @@ import           M68k.Parse
 import           Test.Hspec
 import           Test.Hspec.QuickCheck
 import           Test.QuickCheck           (Property, Testable, chooseInt,
-                                            conjoin, elements, forAll)
+                                            conjoin, elements, forAll, property)
 import           Util
 import           UtilSpec
 
@@ -192,6 +192,7 @@ data EaType
   | EaMem
   | EaPC
   | EaImm Int
+  | EaExtra Operand
 
 runTest :: [Int] -> Op -> Expectation
 runTest ops result =
@@ -229,6 +230,8 @@ checkOpWithEa2 ops expected (EaImm 2) ex =
 checkOpWithEa2 ops expected (EaImm 4) ex =
   imm32Test $ \d ->
     runTest (makeOp ops 0o74 0 ++ longToWord d ++ ex) (expected $ ImmInt d)
+checkOpWithEa2 ops expected (EaExtra o) ex =
+  property $ runTest (makeOp ops 0o74 0 ++ ex) (expected o)
 checkOpWithEa2 _ _ _ _ = undefined
 
 checkOpWithEaMem :: [Int] -> (MemOperand -> Op) -> EaType -> Property
@@ -258,235 +261,125 @@ main =
                  else Nothing)
             [0 .. 15]
         withDn op dn = op .|. (dn `shiftL` 9)
+        immTest :: AType -> Int -> (AType -> Operand -> Int -> Op) -> [EaType] -> Property
+        immTest BYTE op c e =
+          imm8Test $ \i ->
+            testFor ([EaDN, EaMem] ++ e) $
+            checkOpWithEa [op, i] $ \x -> c BYTE x i
+        immTest WORD op c e =
+          imm16Test $ \i ->
+            testFor ([EaDN, EaMem] ++ e) $
+            checkOpWithEa [op .|. 0o100, i] $ \x -> c WORD x i
+        immTest LONG op c e =
+          imm32Test $ \i ->
+            testFor ([EaDN, EaMem] ++ e) $
+            checkOpWithEa ((op .|. 0o200) : longToWord i) $ \x -> c LONG x i
+        atype2N BYTE = 0
+        atype2N WORD = 1
+        atype2N LONG = 2
     describe "decode" $ do
-      prop "ORI.B" $
-        imm8Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o000000, i] $ \x -> ORI BYTE x i
-      prop "ORI.B #CCR" $
-        imm8Test $ \i -> runTest [0o000074, i] (ORI BYTE CCR i)
-      prop "ORI.W" $
-        imm16Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o000100, i] $ \x -> ORI WORD x i
-      prop "ORI.W #SR" $ imm16Test $ \i -> runTest [0o000174, i] (ORI WORD SR i)
-      prop "ORI.L" $
-        imm32Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa (0o000200 : longToWord i) $ \x -> ORI LONG x i
-      prop "CMP2.B" $
-        regTest $ \n ->
-          testFor [EaMem] $
-          checkOpWithEaMem [0o000300, n `shiftL` 12] $ \x -> CMP2 BYTE x n
-      prop "CHK2.B" $
-        regTest $ \n ->
-          testFor [EaMem] $
-          checkOpWithEaMem [0o000300, n `shiftL` 12 .|. 0x800] $ \x ->
-            CHK2 BYTE x n
-      prop "ANDI.B" $
-        imm8Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o001000, i] $ \x -> ANDI BYTE x i
-      prop "ANDI.B #CCR" $
-        imm8Test $ \i -> runTest [0o001074, i] (ANDI BYTE CCR i)
-      prop "ANDI.W" $
-        imm16Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o001100, i] $ \x -> ANDI WORD x i
-      prop "ANDI.W #SR" $
-        imm16Test $ \i -> runTest [0o001174, i] (ANDI WORD SR i)
-      prop "ANDI.L" $
-        imm32Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa (0o001200 : longToWord i) $ \x -> ANDI LONG x i
-      prop "CMP2.W" $
-        regTest $ \n ->
-          testFor [EaMem] $
-          checkOpWithEaMem [0o001300, n `shiftL` 12] $ \x -> CMP2 WORD x n
-      prop "CHK2.W" $
-        regTest $ \n ->
-          testFor [EaMem] $
-          checkOpWithEaMem [0o001300, 0x800 .|. n `shiftL` 12] $ \x ->
-            CHK2 WORD x n
-      prop "SUBI.B" $
-        imm8Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o002000, i] $ \x -> SUBI BYTE x i
-      prop "SUBI.W" $
-        imm16Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o002100, i] $ \x -> SUBI WORD x i
-      prop "SUBI.L" $
-        imm32Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa (0o002200 : longToWord i) $ \x -> SUBI LONG x i
-      prop "CMP2.L" $
-        regTest $ \n ->
-          testFor [EaMem] $
-          checkOpWithEaMem [0o002300, n `shiftL` 12] $ \x -> CMP2 LONG x n
-      prop "CHK2.L" $
-        regTest $ \n ->
-          testFor [EaMem] $
-          checkOpWithEaMem [0o002300, 0x800 .|. n `shiftL` 12] $ \x ->
-            CHK2 LONG x n
-      prop "ADDI.B" $
-        imm8Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o003000, i] $ \x -> ADDI BYTE x i
-      prop "ADDI.W" $
-        imm16Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o003100, i] $ \x -> ADDI WORD x i
-      prop "ADDI.L" $
-        imm32Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa (0o003200 : longToWord i) $ \x -> ADDI LONG x i
-      describe "BTST" $ do
-        describe "byImm" $ do
-          describe "LONG" $ do
-            prop "imm=0(actually 8)" $
-              testFor [EaDN] $
-              checkOpWithEa [0o004000, 0] $ \x -> BTST LONG x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 31)) $ \i ->
-                testFor [EaDN] $
-                checkOpWithEa [0o004000, i] $ \x -> BTST LONG x $ BImm i
-          describe "BYTE" $ do
-            prop "imm=0(actually 8)" $
-              testFor [EaMem, EaPC, EaImm 1] $
-              checkOpWithEa [0o004000, 0] $ \x -> BTST BYTE x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 7)) $ \i ->
-                testFor [EaMem, EaPC, EaImm 1] $
-                checkOpWithEa [0o004000, i] $ \x -> BTST BYTE x $ BImm i
-        describe "byReg" $ do
-          prop "LONG" $ do
+      describe "ORI" $ do
+        prop "B" $ immTest BYTE 0o000000 ORI [EaExtra CCR]
+        prop "W" $ immTest WORD 0o000000 ORI [EaExtra SR]
+        prop "L" $ immTest LONG 0o000000 ORI []
+      describe "ANDI" $ do
+        prop "B" $ immTest BYTE 0o001000 ANDI [EaExtra CCR]
+        prop "W" $ immTest WORD 0o001000 ANDI [EaExtra SR]
+        prop "L" $ immTest LONG 0o001000 ANDI []
+      describe "SUBI" $ do
+        prop "B" $ immTest BYTE 0o002000 SUBI []
+        prop "W" $ immTest WORD 0o002000 SUBI []
+        prop "L" $ immTest LONG 0o002000 SUBI []
+      describe "ADDI" $ do
+        prop "B" $ immTest BYTE 0o003000 ADDI []
+        prop "W" $ immTest WORD 0o003000 ADDI []
+        prop "L" $ immTest LONG 0o003000 ADDI []
+      describe "EORI" $ do
+        prop "B" $ immTest BYTE 0o005000 EORI [EaExtra CCR]
+        prop "W" $ immTest WORD 0o005000 EORI [EaExtra SR]
+        prop "L" $ immTest LONG 0o005000 EORI []
+      describe "CMPI" $ do
+        prop "B" $ immTest BYTE 0o006000 CMPI [EaPC, EaImm 1]
+        prop "W" $ immTest WORD 0o006000 CMPI [EaPC, EaImm 2]
+        prop "L" $ immTest LONG 0o006000 CMPI [EaPC, EaImm 4]
+
+      let doCmp2Chk2 at high =
             regTest $ \n ->
-              testFor [EaDN] $
-              checkOpWithEa [0o000400 `withDn` n] (\x -> BTST LONG x $ BReg n)
-          prop "BYTE" $ do
-            regTest $ \n ->
-              testFor [EaMem, EaPC, EaImm 1] $
-              checkOpWithEa [0o000400 `withDn` n] $ \x -> BTST BYTE x $ BReg n
-      describe "BCHG" $ do
-        describe "byImm" $ do
-          describe "LONG" $ do
-            prop "imm=0(actually 8)" $
-              testFor [EaDN] $
-              checkOpWithEa [0o004100, 0] $ \x -> BCHG LONG x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 31)) $ \i ->
-                testFor [EaDN] $
-                checkOpWithEa [0o004100, i] $ \x -> BCHG LONG x $ BImm i
-          describe "BYTE" $ do
-            prop "imm=0(actually 8)" $
               testFor [EaMem] $
-              checkOpWithEa [0o004100, 0] $ \x -> BCHG BYTE x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 7)) $ \i ->
+              checkOpWithEaMem
+                [ 0o000300 .|. (atype2N at `shiftL` 9)
+                , n `shiftL` 12 .|.
+                  (if high
+                     then 0x800
+                     else 0)
+                ] $ \x ->
+                (if high
+                   then CHK2
+                   else CMP2)
+                  at
+                  x
+                  n
+      describe "CMP2" $ do
+        prop "B" $ doCmp2Chk2 BYTE False
+        prop "W" $ doCmp2Chk2 WORD False
+        prop "L" $ doCmp2Chk2 LONG False
+      describe "CHK2" $ do
+        prop "B" $ doCmp2Chk2 BYTE True
+        prop "W" $ doCmp2Chk2 WORD True
+        prop "L" $ doCmp2Chk2 LONG True
+      let bitTest op c isBTST = do
+            let targetEx =
+                  if isBTST
+                    then [EaPC, EaImm 1]
+                    else []
+                immOp = 0o004000 .|. shiftL c 6
+                regOp = 0o000000 .|. shiftL (c + 4) 6
+            describe "byImm" $ do
+              describe "LONG" $ do
+                let testImm i =
+                      regTest $ \n ->
+                        runTest [immOp .|. n, i] $
+                        op LONG (DR n) $
+                        BImm
+                          (if i == 0
+                             then 8
+                             else i)
+                prop "imm=0(actually 8)" $ testImm 0
+                prop "imm!=0" $ forAll (chooseInt (1, 31)) $ \i -> testImm i
+              describe "BYTE" $ do
+                let testImm i =
+                      testFor (EaMem : targetEx) $
+                      checkOpWithEa [immOp, i] $ \x ->
+                        op BYTE x $
+                        BImm
+                          (if i == 0
+                             then 8
+                             else i)
+                prop "imm=0(actually 8)" $ testImm 0
+                prop "imm!=0" $ forAll (chooseInt (1, 7)) $ \i -> testImm i
+            describe "byReg" $ do
+              prop "LONG" $ do
+                regTest $ \n ->
+                  regTest $ \d ->
+                    runTest [regOp .|. d `withDn` n] $ op LONG (DR d) $ BReg n
+              prop "BYTE" $ do
+                regTest $ \n ->
+                  testFor (EaMem : targetEx) $
+                  checkOpWithEa [regOp `withDn` n] $ \x -> op BYTE x $ BReg n
+      describe "BTST" $ bitTest BTST 0 True
+      describe "BCHG" $ bitTest BCHG 1 False
+      describe "BCLR" $ bitTest BCLR 2 False
+      describe "BSET" $ bitTest BSET 3 False
+      let testCas t = 
+            regTest $ \u ->
+              regTest $ \c ->
                 testFor [EaMem] $
-                checkOpWithEa [0o004100, i] $ \x -> BCHG BYTE x $ BImm i
-        describe "byReg" $ do
-          prop "LONG" $ do
-            regTest $ \n ->
-              testFor [EaDN] $
-              checkOpWithEa [0o000500 `withDn` n] $ \x -> BCHG LONG x $ BReg n
-          prop "BYTE" $ do
-            regTest $ \n ->
-              testFor [EaMem] $
-              checkOpWithEa [0o000500 `withDn` n] $ \x -> BCHG BYTE x $ BReg n
-      describe "BCLR" $ do
-        describe "byImm" $ do
-          describe "LONG" $ do
-            prop "imm=0(actually 8)" $
-              testFor [EaDN] $
-              checkOpWithEa [0o004200, 0] $ \x -> BCLR LONG x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 31)) $ \i ->
-                testFor [EaDN] $
-                checkOpWithEa [0o004200, i] $ \x -> BCLR LONG x $ BImm i
-          describe "BYTE" $ do
-            prop "imm=0(actually 8)" $
-              testFor [EaMem] $
-              checkOpWithEa [0o004200, 0] $ \x -> BCLR BYTE x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 7)) $ \i ->
-                testFor [EaMem] $
-                checkOpWithEa [0o004200, i] $ \x -> BCLR BYTE x $ BImm i
-        describe "byReg" $ do
-          prop "LONG" $ do
-            regTest $ \n ->
-              testFor [EaDN] $
-              checkOpWithEa [0o000600 `withDn` n] $ \x -> BCLR LONG x $ BReg n
-          prop "BYTE" $ do
-            regTest $ \n ->
-              testFor [EaMem] $
-              checkOpWithEa [0o000600 `withDn` n] $ \x -> BCLR BYTE x $ BReg n
-      describe "BSET" $ do
-        describe "byImm" $ do
-          describe "LONG" $ do
-            prop "imm=0(actually 8)" $
-              testFor [EaDN] $
-              checkOpWithEa [0o004300, 0] $ \x -> BSET LONG x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 31)) $ \i ->
-                testFor [EaDN] $
-                checkOpWithEa [0o004300, i] $ \x -> BSET LONG x $ BImm i
-          describe "BYTE" $ do
-            prop "imm=0(actually 8)" $
-              testFor [EaMem] $
-              checkOpWithEa [0o004300, 0] $ \x -> BSET BYTE x $ BImm 8
-            prop "imm!=0" $
-              forAll (chooseInt (1, 7)) $ \i ->
-                testFor [EaMem] $
-                checkOpWithEa [0o004300, i] $ \x -> BSET BYTE x $ BImm i
-        describe "byReg" $ do
-          prop "LONG" $ do
-            regTest $ \n ->
-              testFor [EaDN] $
-              checkOpWithEa [0o000700 `withDn` n] $ \x -> BSET LONG x $ BReg n
-          prop "BYTE" $ do
-            regTest $ \n ->
-              testFor [EaMem] $
-              checkOpWithEa [0o000700 `withDn` n] $ \x -> BSET BYTE x $ BReg n
-      prop "EORI.B" $
-        imm8Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o005000, i] $ \x -> EORI BYTE x i
-      prop "EORI.B #CCR" $
-        imm8Test $ \i -> runTest [0o005074, i] $ EORI BYTE CCR i
-      prop "EORI.W" $
-        imm16Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa [0o005100, i] $ \x -> EORI WORD x i
-      prop "EORI.W #SR" $
-        imm16Test $ \i -> runTest [0o005174, i] $ EORI WORD SR i
-      prop "EORI.L" $
-        imm32Test $ \i ->
-          testFor [EaDN, EaMem] $
-          checkOpWithEa (0o005200 : longToWord i) $ \x -> EORI LONG x i
-      prop "CAS.B" $
-        regTest $ \u ->
-          regTest $ \c ->
-            testFor [EaMem] $
-            checkOpWithEaMem [0o005300, shiftL u 6 .|. c] $ \x -> CAS BYTE c u x
-      prop "SUBI.B" $
-        imm8Test $ \i ->
-          testFor [EaDN, EaMem, EaPC, EaImm 1] $
-          checkOpWithEa [0o006000, i] $ \x -> CMPI BYTE x i
-      prop "CMPI.W" $
-        imm16Test $ \i ->
-          testFor [EaDN, EaMem, EaPC, EaImm 2] $
-          checkOpWithEa [0o006100, i] $ \x -> CMPI WORD x i
-      prop "CMPI.L" $
-        imm32Test $ \i ->
-          testFor [EaDN, EaMem, EaPC, EaImm 4] $
-          checkOpWithEa (0o006200 : longToWord i) $ \x -> CMPI LONG x i
-      prop "CAS.W" $
-        regTest $ \u ->
-          regTest $ \c ->
-            testFor [EaMem] $
-            checkOpWithEaMem [0o006300, shiftL u 6 .|. c] $ \x -> CAS WORD c u x
+                  checkOpWithEaMem [0o004300 .|. ((atype2N t+1) `shiftL` 9), 
+                  shiftL u 6 .|. c] $ \x -> CAS t c u x
+      describe "CAS" $ do 
+        prop "B" $ testCas BYTE
+        prop "W" $ testCas WORD
+        prop "L" $ testCas LONG
       prop "CAS2.W" $
         regTest $ \c1 ->
           regTest $ \c2 ->
@@ -533,11 +426,6 @@ main =
             testFor [EaMem] $
             checkOpWithEaMem [0o007200, 0x0800 .|. r `shiftL` 12] $ \x ->
               MOVES LONG True x r
-      prop "CAS.L" $
-        regTest $ \u ->
-          regTest $ \c ->
-            testFor [EaMem] $
-            checkOpWithEaMem [0o007300, shiftL u 6 .|. c] $ \x -> CAS LONG c u x
       prop "CAS2.L" $
         regTest $ \c1 ->
           regTest $ \c2 ->
@@ -1337,3 +1225,36 @@ main =
           regTest $ \dn ->
             forAll (chooseInt (0, 7)) $ \c ->
               runTest [0o160040 `withDn` c .|. dn] $ ASR BYTE True c dn
+      describe "LSR.B" $ do
+        prop "by imm(sc=0)" $
+          regTest $ \dn -> runTest [0o160010 .|. dn] $ LSR BYTE False 8 dn
+        prop "by imm" $
+          regTest $ \dn ->
+            forAll (chooseInt (1, 7)) $ \c ->
+              runTest [0o160010 `withDn` c .|. dn] $ LSR BYTE False c dn
+        prop "by reg" $
+          regTest $ \dn ->
+            forAll (chooseInt (0, 7)) $ \c ->
+              runTest [0o160050 `withDn` c .|. dn] $ LSR BYTE True c dn
+      describe "ROXR.B" $ do
+        prop "by imm(sc=0)" $
+          regTest $ \dn -> runTest [0o160020 .|. dn] $ ROXR BYTE False 8 dn
+        prop "by imm" $
+          regTest $ \dn ->
+            forAll (chooseInt (1, 7)) $ \c ->
+              runTest [0o160020 `withDn` c .|. dn] $ ROXR BYTE False c dn
+        prop "by reg" $
+          regTest $ \dn ->
+            forAll (chooseInt (0, 7)) $ \c ->
+              runTest [0o160060 `withDn` c .|. dn] $ ROXR BYTE True c dn
+      describe "ROR.B" $ do
+        prop "by imm(sc=0)" $
+          regTest $ \dn -> runTest [0o160030 .|. dn] $ ROR BYTE False 8 dn
+        prop "by imm" $
+          regTest $ \dn ->
+            forAll (chooseInt (1, 7)) $ \c ->
+              runTest [0o160030 `withDn` c .|. dn] $ ROR BYTE False c dn
+        prop "by reg" $
+          regTest $ \dn ->
+            forAll (chooseInt (0, 7)) $ \c ->
+              runTest [0o160070 `withDn` c .|. dn] $ ROR BYTE True c dn
