@@ -16,10 +16,8 @@ data Expr
 
 data Var
   = EnvVar CType String  -- reg var
-  | GVar CType Int -- Low Global
-  | CVar CType Int -- PC realative
+  | GVar CType String -- Low Global
   | TVar CType Int -- temporaly for C
-  | SPVar CType String  -- Special Register(cannot merge)
   | SVar CType Int -- Stack variable
   | Deref Expr -- * var
   | Member CType Var Int -- var.member

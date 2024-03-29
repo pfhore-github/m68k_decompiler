@@ -7,6 +7,7 @@ module CExpr where
 import           CType
 import           Data.Bits
 import           Text.Printf
+import           Util
 
 data Expr
   = Const CType Int
@@ -19,6 +20,7 @@ data Expr
   | Op2 Expr String Expr -- v1 op v2
   | CondExpr Expr Expr Expr -- c ? v1 : v2
   | Expr2 Expr Expr
+  deriving (Show, Eq)
 
 typeOf :: Expr -> CType
 typeOf (Const t _) = t
@@ -46,24 +48,21 @@ typeOf (Expr2 h _) =
 
 data Var
   = EnvVar CType String -- reg var
-  | GVar CType Int -- Low Global
-  | CVar CType Int -- PC realative
+  | GVar CType String -- Global
   | TVar CType Int -- temporaly for C
-  | SPVar CType String -- Special Register(cannot merge)
   | SVar CType Int -- Stack variable
-  | Deref Expr -- * var
+  | Deref Expr -- *var
   | Member CType Var Int -- var.member
   | PMember CType Expr Int -- ptr->member
   | BitField CType Var Int Int -- var.member_m (bit field)
   | BitFieldX CType Var Expr Expr -- (non-supported)
   | Index CType Expr Expr -- var[index]
+  deriving (Show, Eq)
 
 typeofV :: Var -> CType
 typeofV (EnvVar t _) = t
 typeofV (GVar t _) = t
-typeofV (CVar t _) = t
 typeofV (TVar t _) = t
-typeofV (SPVar t _) = t
 typeofV (SVar t _) = t
 typeofV (Deref e) =
   case typeOf e of
@@ -105,34 +104,29 @@ priority "||" = 12
 priority _    = 99
 
 cast :: CType -> Expr -> Expr
-cast t y
-  | typeOf y == t = y
-cast BOOL v = v $!= Const (typeOf v) 0
-cast BCD v = Op1 "toBCD" v
-cast tt@(PTR _) v =
-  let t' = typeOf v
-   in Cast tt $
-      case t' of
-        PTR _ -> v
-        _     -> Cast int32 v
 cast tt@(INT _ n) (Expr2 a b) =
   let n' = sizeOf $ typeOf a
-   in if n' >= n
+   in if n' > n
         then cast tt b
-        else cast tt $ (cast tt a $<<# (8 * n)) $| cast tt b
-cast tt@(INT _ _) v =
-  let t' = typeOf v
-   in Cast tt $
-      case t' of
-        PTR _ -> Cast int32 v
-        _     -> v
+        else cast tt $ (cast tt a $<<# (8 * n')) $| cast tt b
+cast t y
+  | typeOf y == t = y
+cast tt@(INT True _) (Const (INT _ 1) v) = Const tt $ toS8 v
+cast tt@(INT True _) (Const (INT _ 2) v) = Const tt $ toS16 v
+cast tt@(INT True _) (Const (INT _ 4) v) = Const tt $ toS32 v
+cast (INT False 1) (Const _ v) = Const uint8 (v .&. 0xff)
+cast (INT False 2) (Const _ v) = Const uint16 (v .&. 0xffff)
+cast t (Const _ v) = Const t v
+cast BOOL v = v $!= Const (typeOf v) 0
+cast BCD v = Op1 "toBCD" v
 cast t v = Cast t v
 
 lNot :: Expr -> Expr
 lNot (Const _ 0)    = Const BOOL 1
 lNot (Const _ _)    = Const BOOL 0
-lNot (Op2 a "&&" b) = lNot b $|| lNot a
-lNot (Op2 a "||" b) = lNot b $&& lNot a
+lNot (Op1 "!" a)    = cast BOOL a
+lNot (Op2 a "&&" b) = lNot a $|| lNot b
+lNot (Op2 a "||" b) = lNot a $&& lNot b
 lNot (Op2 a "<=" b) = a $> b
 lNot (Op2 a "<" b)  = a $>= b
 lNot (Op2 a ">=" b) = a $< b
@@ -212,11 +206,25 @@ infix 3 $<=
 ($!=) :: Expr -> Expr -> Expr
 ($!=) = cmpOp "!="
 
+memberOf :: CType -> Var -> Int -> Var
+memberOf t v 0 = deref $ cast (PTR t) (addrOf v)
+memberOf t (Deref v) n = pMemberOf t v n
+memberOf t v n = Member t v n
+
+-- C -> operator
+pMemberOf :: CType -> Expr -> Int -> Var
+pMemberOf t v 0 = deref $ cast (PTR t) v
+pMemberOf t (VarAddr v) n = memberOf t v n
+pMemberOf t v n = PMember t v n
+
+
 ($@#) :: Expr -> Int -> Var
 ($@#) x n = x $@ Const int32 n
 
 ($@) :: Expr -> Expr -> Var
-($@) x = Index (typeOf x) x
+($@) x =
+  let (PTR t) = typeOf x
+  in Index t x
 
 ($||) :: Expr -> Expr -> Expr
 ($||) (Const BOOL 0) _ = immT
@@ -246,11 +254,11 @@ bitOp :: String -> Expr -> Expr -> Expr
 bitOp op (Expr2 h1 l1) (Expr2 h2 l2) = Expr2 (bitOp op h1 h2) (bitOp op l1 l2)
 bitOp op x@(Expr2 h1 _) y =
   let tt@(INT _ n) = typeOf h1
-      y' = Expr2 (cast tt (y $>> Const int8 (8 * n))) (cast tt y)
+      y' = Expr2 (cast tt (y $>># (8 * n))) (cast tt y)
    in bitOp op x y'
 bitOp op x y@(Expr2 h1 _) =
   let tt@(INT _ n) = typeOf h1
-      x' = Expr2 (cast tt (x $>> Const int8 (8 * n))) (cast tt x)
+      x' = Expr2 (cast tt (x $>># (8 * n))) (cast tt x)
    in bitOp op x' y
 bitOp "&" (Const t x) (Const _ y) = Const t (x .&. y)
 bitOp "|" (Const t x) (Const _ y) = Const t (x .|. y)
@@ -272,11 +280,9 @@ bitOp c x y = Op2 x c (cast (typeOf x) y)
 
 ($>>) :: Expr -> Expr -> Expr
 ($>>) (Const t1 x) (Const _ y) = Const t1 $ x `shiftR` y
-($>>) x y                      = Op2 x ">>" y
+($>>) x y                      = Op2 x ">>" (cast uint8 y)
 
 arithOp :: String -> Expr -> Expr -> Expr
-arithOp "+" (Const t1 x) (Const _ y) = Const t1 $ x + y
-arithOp "-" (Const t1 x) (Const _ y) = Const t1 $ x - y
 arithOp "*" (Const t1 x) (Const _ y) = Const t1 $ x * y
 arithOp "/" (Const t1 x) (Const _ y) = Const t1 $ x `div` y
 arithOp "%" (Const t1 x) (Const _ y) = Const t1 $ x `mod` y
@@ -286,10 +292,16 @@ subV :: Expr -> Expr -> Expr
 subV = arithOp "subV"
 
 ($<<#) :: Expr -> Int -> Expr
-($<<#) x y = x $<< Const uint8 y
+($<<#) x y
+  | y == 0 = x
+  | y >= 0 = x $<< Const uint8 y
+  | otherwise = x $>> Const uint8 (-y)
 
 ($>>#) :: Expr -> Int -> Expr
-($>>#) x y = x $>> Const uint8 y
+($>>#) x y
+  | y == 0 = x
+  | y >= 0 = x $>> Const uint8 y
+  | otherwise = x $<< Const uint8 (-y)
 
 (#$<<) :: Int -> Expr -> Expr
 (#$<<) x y = Const uint32 x $<< y
@@ -298,16 +310,27 @@ subV = arithOp "subV"
 (#$>>) x y = Const uint32 x $>> y
 
 ($+) :: Expr -> Expr -> Expr
-($+) = arithOp "+"
+x $+ (Const _ 0)                    = x
+(Const t1@(PTR t) x) $+ (Const _ y) = Const t1 $ x + y * sizeOf t
+(Const t1 x) $+ (Const _ y)         = Const t1 $ x + y
+x $+ y                              = Op2 x "+" y
 
 ($-) :: Expr -> Expr -> Expr
-($-) = arithOp "+"
+x $- (Const _ 0)                          = x
+(Const t1@(PTR t) x) $- (Const (PTR _) y) = Const t1 $ (x - y) `div` sizeOf t
+(Const t1@(PTR t) x) $- (Const _ y)       = Const t1 $ x - y * sizeOf t
+(Const t1 x) $- (Const _ y)               = Const t1 $ x - y
+x $- y                                    = Op2 x "-" y
 
 ($+#) :: Expr -> Int -> Expr
 ($+#) x y = x $+ Const (typeOf x) y
 
 ($-#) :: Expr -> Int -> Expr
-($-#) x y = x $- Const (typeOf x) y
+($-#) x y =
+  let t = typeOf x
+   in case t of
+        PTR _ -> x $- Const int32 y
+        _     -> x $- Const t y
 
 -- multiply/div
 ($*) :: Expr -> Expr -> Expr
@@ -347,40 +370,35 @@ op2 op x y   = Op2 x op y
 
 deref :: Expr -> Var -- *expr
 deref (VarAddr var) = var
-deref (Op2 a "+" (Op2 b "<<" (Const _ c))) =
-  let (PTR t) = typeOf a
-   in case b of
-        Const _ n -> PMember t a $ n `shiftL` c
-        _ ->
-          let sizec = shiftSizeOf t
-              indexN =
-                if sizec > c
-                  then b $>># (sizec - c)
-                  else b $<<# (c - sizec)
-           in Index t a indexN
-deref (Op2 a "+" b) =
-  let (PTR t) = typeOf a
-   in case b of
-        Const _ n -> PMember t a n
-        _         -> Index t a (b $<<# shiftSizeOf t)
 deref x =
   case typeOf x of
     PTR _ -> Deref x
     _     -> undefined
 
+addrOf :: Var -> Expr
+addrOf (Deref x)     = x
+addrOf x             = VarAddr x
+{-
 instance Show Expr where
   show (Arg _ v) = v
   show (VarValue v) = show v
-  show (VarAddr v) = printf "&%s" $ show v
+  show (VarAddr v) =
+    case v of
+      EnvVar t _ -> printf "(%v*)&%s" t $ show v
+      GVar t _   -> printf "(%v*)&%s" t $ show v
+      TVar t _   -> printf "(%v*)&%s" t $ show v
+      SVar t _   -> printf "(%v*)&%s" t $ show v
+      Deref e    -> show e
+      _          -> printf "(%v*)&(%s)" (typeofV v) $ show v
   show (Const t v) =
     case t of
-      INT True n -> printf "0x%0*X" (n * 2) v
-      PTR _ -> printf "0x%08X" v
+      INT False n -> printf "%v(0x%0*X)" t (n * 2) v
+      PTR p -> printf "(%v*)0x%08X" p v
       BOOL ->
         if v == 1
           then "true"
           else "false"
-      _ -> printf "%d" v
+      _ -> printf "%v(%d)" t v
   show (Cast t v) = printf "(%v)(%s)" t $ show v
   show (IncDec True c (Deref v)) =
     printf
@@ -421,15 +439,14 @@ instance Show Expr where
 
 instance Show Var where
   show (EnvVar _ s) = s
-  show (GVar _ v) = printf "_G_%05x" v
+  show (GVar _ v) = v
   show (TVar _ v) = printf "_t_%d" v
-  show (CVar _ v) = printf "_c_%05x" v
   show (SVar _ v) = printf "_l_%05x" v
-  show (SPVar _ s) = s
   show (Deref v) = printf "*%s" $ show v
   show (Member _ v n) = printf "%s._%d" (show v) n
   show (PMember _ v n) = printf "%s->_%d" (show v) n
   show (BitField _ v o s) = printf "%s._%d_%d" (show v) o s
   show (BitFieldX _ v o s) =
     printf "getBit(%v,%v,%v)" (show v) (show o) (show s)
-  show (Index _ v i) = printf "%v[%v]" (show v) (show i)
+  show (Index t v i) = printf "((%v*)%v)[%v]" t (show v) (show i)
+-}

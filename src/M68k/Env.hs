@@ -2,7 +2,7 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use tuple-section" #-}
 module M68k.Env
-  ( MEnv(MEnv, v_stmt, v_sp, v_savedSp)
+  ( MEnv(MEnv, v_dr, v_ar, v_cc, v_stmt, v_sp, v_savedSp)
   , readDn
   , readAn
   , readCC
@@ -100,7 +100,7 @@ instance Env MEnv where
                 v2 = Arg t (v ++ "_L")
             writeDn_ n (Expr2 v1 v2)
             return v2
-          Just x -> return $ cast t x
+          Just x -> return x
       1 ->
         case val of
           Nothing -> do
@@ -110,18 +110,18 @@ instance Env MEnv where
                 v4 = Arg t (v ++ "_B3")
             writeDn_ n $ Expr2 (Expr2 v1 v2) (Expr2 v3 v4)
             return v4
-          Just x -> return $ cast t x
+          Just x -> return x
       _ -> return $ Const BOOL 0
-  readReg t v@['A', c] = do
+  readReg _ v@['A', c] = do
     let n = digitToInt c
     val <- readAn_ n
     case val of
       Nothing -> do
         let v2 = Arg (PTR VOID) v
         writeAn_ n v2
-        return $ cast t v2
-      Just v2 -> return $ cast t v2
-  readReg t v@['C', c] = do
+        return v2
+      Just v2 -> return v2
+  readReg _ v@['C', c] = do
     val <- readCC_ c
     case val of
       Nothing -> do
@@ -132,8 +132,8 @@ instance Env MEnv where
                    else BOOL)
                 v
         writeCC_ c v2
-        return $ cast t v2
-      Just v2 -> return $ cast t v2
+        return v2
+      Just v2 -> return v2
   readReg _ _ = return $ Const BOOL 0
   writeReg v@['D', c] x = do
     let t = typeOf x
@@ -171,7 +171,7 @@ instance Env MEnv where
         writeAn_ 7 x
     | otherwise = do
         let n = digitToInt c
-        writeAn_ n (cast int32 x)
+        writeAn_ n x
   writeReg ['C', c] x = do
     writeCC_
       c
@@ -236,8 +236,8 @@ getStackValue pos =
 
 readDn :: CType -> Int -> StateV MEnv Expr
 readDn t n = readReg t ['D', intToDigit n]
-readAn :: CType -> Int -> StateV MEnv Expr
-readAn t n = readReg t ['A', intToDigit n]
+readAn :: Int -> StateV MEnv Expr
+readAn n = readReg (PTR VOID) ['A', intToDigit n]
 readCC :: Char -> StateV MEnv Expr
 readCC c = readReg (if c == 'I' then uint8 else BOOL) ['C',c]
 

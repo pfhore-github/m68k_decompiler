@@ -18,7 +18,7 @@ data AType
   = BYTE
   | WORD
   | LONG
-  deriving (Eq)
+  deriving (Enum, Eq)
 
 instance Show AType where
   show BYTE = "B"
@@ -367,7 +367,6 @@ parseEaEx nw base
   | not (testBit nw 8) = do
     return $ Offset8 (toS8 (getBit nw 0 0xff)) base ext index cc
   | testBit nw 3 = nothingT
-  | getBit nw 6 3 == 3 = nothingT
   | od_i == 0 && isPost = nothingT
   | otherwise = do
     bd <-
@@ -535,11 +534,6 @@ doOp2 f t dstM immM = do
   dst <- dstM
   return $ f t dst o
 
-toAType :: (Eq a, Num a, Show a) => a -> AType
-toAType 0 = BYTE
-toAType 1 = WORD
-toAType 2 = LONG
-toAType n = error ("unknown type at " ++ show n)
 
 toBitOp :: (Eq a, Num a) => a -> AType -> Operand -> BopSc -> Op
 toBitOp 0 = BTST
@@ -551,7 +545,7 @@ toBitOp _ = undefined
 parseOp0 :: Int -> Int -> Int -> Int -> MaybeT (State (Int, [Word8])) Op
 parseOp0 dni opi regT regN
   | opi < 3 = do
-    let t = toAType opi
+    let t = toEnum opi
         bitOp = toBitOp opi
         ea = parseEA regT regN nothingT
         dst =
@@ -578,8 +572,8 @@ parseOp0 dni opi regT regN
       3 -> return ILLEGAL
       4 -> parseBitTest regT regN BSET
       _
-        | dni < 3 -> parseOpCmp2 (toAType dni) regT regN
-        | otherwise -> parseCas (toAType $ dni - 5) regT regN
+        | dni < 3 -> parseOpCmp2 (toEnum dni) regT regN
+        | otherwise -> parseCas (toEnum $ dni - 5) regT regN
   | otherwise = do
     if regT == 1
       then parseMoveP
@@ -849,8 +843,8 @@ parseOp5 dni opi regT regN
             let target = pc + toS16 imm
             return $ DBcc cc regN target
           _ -> Scc cc <$> ea
-  | opi < 3 = ADDQ (toAType opi) immi <$> parseEA regT regN nothingT
-  | otherwise = SUBQ (toAType $ opi - 4) immi <$> parseEA regT regN nothingT
+  | opi < 3 = ADDQ (toEnum opi) immi <$> parseEA regT regN nothingT
+  | otherwise = SUBQ (toEnum $ opi - 4) immi <$> parseEA regT regN nothingT
   where
     immi =
       if dni == 0
@@ -889,11 +883,11 @@ parseOp8 dn 6 0 regN = UNPK_REG regN dn <$> next16
 parseOp8 dn 6 1 regN = UNPK_MEM regN dn <$> next16
 parseOp8 dn n regT regN
   | n < 3 = do
-    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-    return $ OR (toAType n) ea dn
+    ea <- parseEA regT regN (ImmInt <$> nextX (toEnum n))
+    return $ OR (toEnum n) ea dn
   | otherwise = do
     ea <- parseEAMem regT regN
-    return $ OR_TO_MEM (toAType $ n - 4) dn ea
+    return $ OR_TO_MEM (toEnum $ n - 4) dn ea
 
 parseOp9 dn 3 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next16)
@@ -903,13 +897,13 @@ parseOp9 dn 7 regT regN = do
   return $ SUBA LONG ea dn
 parseOp9 dn n regT regN
   | n < 3 = do
-    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-    return $ SUB (toAType n) ea dn
-  | regT == 0 = do return $ SUBX_REG (toAType $ n - 4) dn regN
-  | regT == 1 = do return $ SUBX_MEM (toAType $ n - 4) dn regN
+    ea <- parseEA regT regN (ImmInt <$> nextX (toEnum n))
+    return $ SUB (toEnum n) ea dn
+  | regT == 0 = do return $ SUBX_REG (toEnum $ n - 4) dn regN
+  | regT == 1 = do return $ SUBX_MEM (toEnum $ n - 4) dn regN
   | otherwise = do
     ea <- parseEAMem regT regN
-    return $ SUB_TO_MEM (toAType $ n - 4) dn ea
+    return $ SUB_TO_MEM (toEnum $ n - 4) dn ea
 
 parseOpB dn 3 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next16)
@@ -919,14 +913,14 @@ parseOpB dn 7 regT regN = do
   return $ CMPA LONG ea dn
 parseOpB dn n regT regN
   | n < 3 = do
-    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-    return $ CMP (toAType n) ea dn
+    ea <- parseEA regT regN (ImmInt <$> nextX (toEnum n))
+    return $ CMP (toEnum n) ea dn
   | otherwise = do
     if regT == 1
-      then return $ CMPM (toAType $ n - 4) regN dn
+      then return $ CMPM (toEnum $ n - 4) regN dn
       else do
         ea <- parseEA regT regN nothingT
-        return $ EOR (toAType $ n - 4) dn ea
+        return $ EOR (toEnum $ n - 4) dn ea
 
 parseOpC dn 3 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next16)
@@ -948,11 +942,11 @@ parseOpC dn 6 1 regN = do
   return $ EXG_DA dn regN
 parseOpC dn n regT regN
   | n < 3 = do
-    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-    return $ AND (toAType n) ea dn
+    ea <- parseEA regT regN (ImmInt <$> nextX (toEnum n))
+    return $ AND (toEnum n) ea dn
   | otherwise = do
     ea <- parseEAMem regT regN
-    return $ AND_TO_MEM (toAType $ n - 4) dn ea
+    return $ AND_TO_MEM (toEnum $ n - 4) dn ea
 
 parseOpD dn 3 regT regN = do
   ea <- parseEA regT regN (ImmInt <$> next16)
@@ -962,13 +956,13 @@ parseOpD dn 7 regT regN = do
   return $ ADDA LONG ea dn
 parseOpD dn n regT regN
   | n < 3 = do
-    ea <- parseEA regT regN (ImmInt <$> nextX (toAType n))
-    return $ ADD (toAType n) ea dn
-  | regT == 0 = do return $ ADDX_REG (toAType $ n - 4) regN dn
-  | regT == 1 = do return $ ADDX_MEM (toAType $ n - 4) regN dn
+    ea <- parseEA regT regN (ImmInt <$> nextX (toEnum n))
+    return $ ADD (toEnum n) ea dn
+  | regT == 0 = do return $ ADDX_REG (toEnum $ n - 4) regN dn
+  | regT == 1 = do return $ ADDX_MEM (toEnum $ n - 4) regN dn
   | otherwise = do
     ea <- parseEAMem regT regN
-    return $ ADD_TO_MEM (toAType $ n - 4) dn ea
+    return $ ADD_TO_MEM (toEnum $ n - 4) dn ea
 
 parseShift dir t regT dn regN
   | regT == 0 || regT == 4 = do
@@ -1067,7 +1061,7 @@ parseOpE dn 7 regT regN = do
       7 -> BFINS dm ea off width
       _ -> undefined
 parseOpE dn opi regT regN =
-  parseShift (opi < 4) (toAType $ opi `mod` 4) regT dn regN
+  parseShift (opi < 4) (toEnum $ opi `mod` 4) regT dn regN
 
 next64 = do
   high <- next32

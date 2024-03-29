@@ -83,7 +83,7 @@ showOp :: [(Int, Op)] -> String
 showOp ops =
   let labels = S.fromList $ getLabels ops
       showOp1 (pc, op) =
-        (if S.member pc labels then printf "%05X:\t" pc else "\t") ++
+        (if S.member pc labels then printf "_%05X:\t" pc else "\t") ++
         case op of
           ORI t o v -> printf "ORI.%v #%X, %v" t v o
           ANDI t o v -> printf "ANDI.%v #%X, %v" t v o

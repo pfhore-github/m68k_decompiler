@@ -1,4 +1,3 @@
-{-# OPTIONS_GHC -Wno-missing-signatures #-}
 {-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 
 module M68k.Decompile where
@@ -8,12 +7,14 @@ import           CStmt
 import           CType
 import           Control.Monad.State
 import           Data.Bits
+import qualified Data.Map            as M
 import           Env
 import           M68k.Env
 import           M68k.Parse
+import           MonadOp
 import           Text.Printf
-import qualified Data.Map as M
-import MonadOp
+
+toCType :: AType -> Bool -> CType
 toCType t sg =
   INT
     sg
@@ -22,23 +23,31 @@ toCType t sg =
        WORD -> 2
        LONG -> 4)
 
+dnVar :: CType -> Int -> Var
 dnVar t n = EnvVar t $ printf "D%d" n
+
+anVar :: CType -> Int -> Var
 anVar t n = EnvVar t $ printf "A%d" n
+
+rnVar :: CType -> Int -> Var
 rnVar t n =
   if n > 7
     then anVar t (n - 8)
     else dnVar t n
 
+dnVal :: Env c => CType -> Int -> StateV c Expr
 dnVal t n = readVar $ dnVar t n
+
+anVal :: Env c => CType -> Int -> StateV c Expr
 anVal t n = readVar $ anVar t n
+
+rnVal :: Env c => CType -> Int -> StateV c Expr
 rnVal t n = readVar $ rnVar t n
 
+scale2Type :: Int -> CType
 scale2Type c = INT False (1 `shiftR` c)
 
-getIndex :: Bool -> Int -> StateV MEnv Expr
-getIndex True rn  = cast int32 <$> rnVal int16 rn
-getIndex False rn = rnVal uint32 rn
-
+cc2Cond :: Int -> StateV MEnv Expr
 cc2Cond cc = do
   c <- readCC 'C'
   z <- readCC 'Z'
@@ -66,62 +75,72 @@ cc2Cond cc = do
       _  -> undefined
 
 applyEaBase :: AddrBase -> Int -> CType -> StateV MEnv Expr
-applyEaBase (BaseAR r) bd t
-  | r == 7 = do
-      sp <- getSPM
-      return $ VarAddr $ SVar t (sp + bd)
-  | otherwise = do
-      v <- readAn (PTR t) r
-      return $ v $+ Const int32 bd
+applyEaBase (BaseAR 7) bd t = do
+  sp <- getSPM
+  return $ addrOf $ SVar t (sp + bd)
+applyEaBase (BaseAR r) bd t = do
+  v <- readAn r
+  return $ addrOf $ pMemberOf t v bd
+applyEaBase (BasePC pc) bd t =
+  Known $ VarAddr $ GVar t $ printf "C_%05X" $ pc + bd
+applyEaBase BaseNone bd t = Known $ VarAddr $ GVar t $ printf "G_%05X" bd
 
-applyEaBase (BasePC pc) bd t = Known $ VarAddr $ CVar t (pc + bd)
-applyEaBase BaseNone bd t = Known $ VarAddr $ GVar t bd
+getIndex :: Bool -> Int -> StateV MEnv Expr
+getIndex True rn  = cast int32 <$> rnVal int16 rn
+getIndex False rn = rnVal uint32 rn
 
-applyRn base w (Just rn) c = do
+applyRn :: Expr -> Bool -> Maybe Int -> Int -> CType -> StateV MEnv Expr
+applyRn base w (Just rn) c t = do
   index <- getIndex w rn
-  return $ base $+ ( index $<<# c)
-applyRn base _ Nothing _   = return base
+  let shiftT = shiftSizeOf t
+  return $ addrOf $ base $@ (index $<<# (c - shiftT))
+applyRn base _ Nothing _ _ = return base
 
 operand2Value :: Operand -> CType -> StateV MEnv Expr
 operand2Value (ImmInt v) t = Known $ Const t v
 operand2Value (DR r) t     = readDn t r
-operand2Value (AR r) t     = readAn t r
+operand2Value (AR r) t     = cast t <$> readAn r
 operand2Value x t          = VarValue <$> operand2Var x t
 
 operand2Addr :: MemOperand -> CType -> StateV MEnv Expr
-operand2Addr (UnRefAR r) t = readAn (PTR t) r
+operand2Addr (UnRefAR r) t = cast (PTR t) <$> readAn r
 operand2Addr (UnRefInc r) t = do
-  v <- readAn (PTR t) r
-  writeAn r (v $+# sizeOf t)
+  v <- readAn r
+  writeAn r (cast (PTR t) v $+# 1)
   return $ IncDec True True $ anVar (PTR t) r
-operand2Addr (UnRefDec r) t = Known $ IncDec False False $ anVar (PTR t) r
+operand2Addr (UnRefDec r) t = do
+  v <- readAn r
+  writeAn r (cast (PTR t) v $-# 1)
+  return $ IncDec False False $ anVar (PTR t) r
 operand2Addr (Offset16 d b) t = applyEaBase b d t
 operand2Addr (Offset8 d base w rn cc) t = do
-  base1 <- applyEaBase base d (PTR t)
-  applyRn base1 w (Just rn) cc
+  base1 <- applyEaBase base d t
+  applyRn base1 w (Just rn) cc t
 operand2Addr (Indirect bd base w rn cc) t = do
-  base1 <- applyEaBase base bd (PTR t)
-  applyRn base1 w rn cc
-operand2Addr (PreIndex bd base w rn cc od) t = do
-  base1 <- applyEaBase base bd (PTR t)
-  base2 <- applyRn base1 w rn cc
-  return $ base2 $+ Const int32 od
-operand2Addr (PostIndex bd base w rn cc od) t = do
   base1 <- applyEaBase base bd t
-  applyRn (base1 $+ Const int32 od) w rn cc
-operand2Addr (ImmAddr addr) t = Known $ VarAddr $ GVar t addr
+  applyRn base1 w rn cc t
+operand2Addr (PreIndex bd base w rn cc od) t = do
+  base1 <- applyEaBase base bd $ PTR VOID
+  base2 <- applyRn base1 w rn cc (PTR VOID)
+  return $ addrOf $ pMemberOf t base2 od
+operand2Addr (PostIndex bd base w rn cc od) t = do
+  base1 <- applyEaBase base bd $ PTR VOID
+  applyRn (addrOf $ pMemberOf t base1 od) w rn cc t
+operand2Addr (ImmAddr addr) t = Known $ VarAddr $ GVar t $ printf "G_%05X" addr
 
 operand2Var :: Operand -> CType -> StateV MEnv Var
-operand2Var (DR r) t       = Known $ dnVar t r
-operand2Var (AR r) t       = Known $ anVar t r
-operand2Var (Address c) t  = deref <$> operand2Addr c t
+operand2Var (DR r) t      = Known $ dnVar t r
+operand2Var (AR r) t      = Known $ anVar t r
+operand2Var (Address c) t = deref <$> operand2Addr c t
 operand2Var _ _           = undefined
 
 derefVal :: Var -> Expr -- *var
 derefVal v = VarValue $ deref $ VarValue v
 
+isNegative :: Expr -> Expr
 isNegative v = cast int32 v $< Const int32 0
 
+defaultNZ :: Expr -> StateV MEnv ()
 defaultNZ v = do
   writeCC 'Z' $ v $!= Const int32 0
   writeCC 'N' $ isNegative v
@@ -137,15 +156,18 @@ cmpCV x y = do
   writeCC 'V' $ x_s `subV` y_s
   writeCC 'S' $ x_s $> y_s
 
+nullCV :: StateV MEnv ()
 nullCV = do
   writeCC 'C' immF
   writeCC 'V' immF
   clearCcS
 
+updateX :: StateV MEnv ()
 updateX = do
   v <- readCC 'C'
   writeCC 'X' v
 
+getcc :: StateV MEnv Expr
 getcc = do
   c <- cast uint16 <$> readCC 'C'
   v <- cast uint16 <$> readCC 'V'
@@ -154,6 +176,7 @@ getcc = do
   x <- cast uint16 <$> readCC 'X'
   return $ c $| (v $<<# 1) $| (z $<<# 2) $| (n $<<# 3) $| (x $<<# 4)
 
+setcc :: Expr -> StateV MEnv ()
 setcc v = do
   writeCC 'C' $ cast BOOL (v $&# 1)
   writeCC 'V' $ cast BOOL (v $&# 2)
@@ -180,6 +203,7 @@ decompileImmSR op v = do
   decompileImmCR op v
   writeCC 'I' $ op2 op ccV (Const uint8 (v `shiftR` 8))
 
+bitmask :: CType -> BopSc -> StateV MEnv Expr
 bitmask t (BImm v) = Known $ Const t (1 `shiftL` v)
 bitmask t (BReg n) = do
   v <- readDn uint8 n
@@ -189,6 +213,7 @@ spVar :: Var
 spVar = EnvVar (PTR uint16) "A7"
 
 type DecompileRet = StateV MEnv ()
+
 decompileBxxx :: String -> AType -> Operand -> BopSc -> DecompileRet
 decompileBxxx op t ea pos = do
   let ct = toCType t False
@@ -200,6 +225,7 @@ decompileBxxx op t ea pos = do
   assignOp op ea_var mask
   writeCC 'Z' $ lNot (VarValue tmp_var) $& mask
 
+spTop :: Env a => CType -> StateV a Var
 spTop t = SVar t <$> getSPM
 
 decompile1MoveMPush :: CType -> [Int] -> DecompileRet
@@ -217,10 +243,11 @@ decompile1MoveMDecr t sz regs an = do
       regsR = reverse $ zip [0 ..] regs
       len = length regs
   temp <- newVar t
-  temp $= (VarValue base $+# (- (len * sz)))
-  mapB (\(i, n) -> do
-           val <- rnVal t n
-           (VarValue base $@# i) $= val)
+  temp $= (VarValue base $+# (-(len * sz)))
+  mapB
+    (\(i, n) -> do
+       val <- rnVal t n
+       (VarValue base $@# i) $= val)
     regsR
   base $=^ temp
 
@@ -230,16 +257,19 @@ decompile1MoveMToMem t ea regs = do
   base <- operand2Addr ea (PTR t)
   let rs = zip [0 ..] regs
   temp $= base
-  mapB (\(i, n) -> do
-           val <- rnVal t n
-           (VarValue temp $@# i) $= val)
+  mapB
+    (\(i, n) -> do
+       val <- rnVal t n
+       (VarValue temp $@# i) $= val)
     rs
 
 decompile1MoveMPop :: CType -> [Int] -> DecompileRet
-decompile1MoveMPop t = mapB (\x -> do
-           top <- spTop t
-           rnVar t x $=^ Deref (VarValue top)
-           top $+= Const int32 (sizeOfS t))
+decompile1MoveMPop t =
+  mapB
+    (\x -> do
+       top <- spTop t
+       rnVar t x $=^ Deref (VarValue top)
+       top $+= Const int32 (sizeOfS t))
 
 decompile1MoveMIncr :: CType -> Int -> [Int] -> Int -> DecompileRet
 decompile1MoveMIncr t sz regs an = do
@@ -259,6 +289,7 @@ decompile1MoveMFromMem t ea regs = do
   temp $= base
   mapB (\(i, n) -> rnVar t n $=^ (VarValue temp $@# i)) rs
 
+decompileMulL :: CType -> Operand -> Int -> StateV MEnv ()
 decompileMulL t ea dr = do
   src <- operand2Value ea t
   let dst = dnVar t dr
@@ -269,6 +300,7 @@ decompileMulL t ea dr = do
   dst $= l
   defaultNZ dstV
 
+decompileMulLL :: CType -> Operand -> Int -> Int -> StateV MEnv ()
 decompileMulLL t ea dh dl = do
   src <- operand2Value ea t
   let dstH = dnVar t dh
@@ -283,9 +315,10 @@ decompileMulLL t ea dh dl = do
   writeCC 'V' immF
   writeCC 'C' immF
   writeCC 'Z' $ (retH $== zero) $&& (retL $== zero)
-  writeCC 'N' $  isNegative retH
+  writeCC 'N' $ isNegative retH
   clearCcS
 
+decompileDivL :: CType -> Operand -> Int -> Int -> StateV MEnv ()
 decompileDivL t ea dr dq = do
   src <- operand2Value ea t
   let dstR = dnVar t dr
@@ -298,10 +331,11 @@ decompileDivL t ea dr dq = do
   dstQ $/= src
   newValue <- readVar dstQ
   if dr /= dq
-        then dstR $= VarValue tmp $% src
-        else stmtNop
+    then dstR $= VarValue tmp $% src
+    else stmtNop
   defaultNZ newValue
 
+decompileDivLL :: CType -> Operand -> Int -> Int -> StateV MEnv ()
 decompileDivLL t ea dr dq = do
   src <- operand2Value ea t
   let dstR = dnVar t dr
@@ -323,15 +357,13 @@ decompileDivLL t ea dr dq = do
 decompile1 :: Op -> DecompileRet
 decompile1 (ORI _ CCR v) = decompileImmCR "|" v
 decompile1 (ORI _ SR v) = decompileImmSR "|" v
-
 decompile1 (ORI t ea v) = do
   let ct = toCType t False
-  let imm = Const ct v
+      imm = Const ct v
   dst <- operand2Var ea ct
   dst $|= imm
   nullCV
   defaultNZ (VarValue dst)
-
 decompile1 (ANDI _ CCR v) = decompileImmCR "&" v
 decompile1 (ANDI _ SR v) = decompileImmSR "&" v
 decompile1 (ANDI t ea v) = do
@@ -341,7 +373,6 @@ decompile1 (ANDI t ea v) = do
   dst $&= imm
   nullCV
   defaultNZ (VarValue dst)
-
 decompile1 (EORI _ CCR v) = decompileImmCR "^" v
 decompile1 (EORI _ SR v) = decompileImmSR "^" v
 decompile1 (EORI t ea v) = do
@@ -351,7 +382,6 @@ decompile1 (EORI t ea v) = do
   dst $^= imm
   nullCV
   defaultNZ (VarValue dst)
-
 decompile1 (SUBI t ea v) = do
   let ct = toCType t True
       imm = Const ct v
@@ -362,7 +392,6 @@ decompile1 (SUBI t ea v) = do
   defaultNZ (VarValue dst)
   cmpCV (VarValue tmp) imm
   updateX
-
 decompile1 (ADDI t ea v) = do
   let ct = toCType t True
       imm = Const ct v
@@ -373,7 +402,6 @@ decompile1 (ADDI t ea v) = do
   defaultNZ (VarValue dst)
   cmpCV (VarValue tmp) (neg imm)
   updateX
-
 decompile1 (CMPI t ea v) = do
   let ct = toCType t True
       imm = Const ct v
@@ -381,32 +409,27 @@ decompile1 (CMPI t ea v) = do
   writeCC 'Z' $ dst $== imm
   writeCC 'N' $ isNegative (dst $- imm)
   cmpCV dst imm
-
 decompile1 (BTST t ea sc) = do
   let ct = toCType t False
   ea_v <- operand2Value ea ct
   mask <- bitmask ct sc
   writeCC 'Z' $ lNot (ea_v $& mask)
-
 decompile1 (BCHG t ea sc) = decompileBxxx "^" t ea sc
 decompile1 (BCLR t ea sc) = decompileBxxx "&~" t ea sc
 decompile1 (BSET t ea sc) = decompileBxxx "|" t ea sc
-
 decompile1 (CMP2 t ea rn) = do
   let ct = toCType t (rn > 7)
   dn <- rnVal ct rn
   mem <- operand2Addr ea ct
   let low = VarValue $ PMember ct mem 0
       high = VarValue $ PMember ct mem $ sizeOf ct
-  writeCC 'Z' $  (dn $== low) $|| (dn $== high)
-  writeCC 'C' $  (dn $< low) $|| (dn $> high)
+  writeCC 'Z' $ (dn $== low) $|| (dn $== high)
+  writeCC 'C' $ (dn $< low) $|| (dn $> high)
   writeCC 'S' immNA
-
 decompile1 (CHK2 t ea rn) = do
   decompile1 (CMP2 t ea rn)
   cc <- readCC 'C'
   if_ cc (newStmt $ Trap Nothing)
-
 decompile1 (CAS t dc du ea) = do
   let ct = toCType t False
       dc_var = dnVar ct dc
@@ -417,8 +440,7 @@ decompile1 (CAS t dc du ea) = do
   defaultNZ (ea_val $- dc_val)
   cmpCV ea_val dc_val
   cc <- readCC 'Z'
-  ifElse cc (ea_var $= du_val) (dc_var $= ea_val )
-
+  ifElse cc (ea_var $= du_val) (dc_var $= ea_val)
 decompile1 (CAS2 t dc1 dc2 du1 du2 rn1 rn2) = do
   let ct = toCType t False
       dc1_var = dnVar ct dc1
@@ -437,88 +459,73 @@ decompile1 (CAS2 t dc1 dc2 du1 du2 rn1 rn2) = do
   defaultNZ (rn1_val $- dc1_val)
   cmpCV rn1_val dc1_val
   cc1 <- readCC 'Z'
-  ifElse cc1
-    ( do
-        defaultNZ (rn2_val $- dc2_val)
+  ifElse
+    cc1
+    (do defaultNZ (rn2_val $- dc2_val)
         cmpCV rn2_val dc2_val
         cc2 <- readCC 'Z'
-        ifElse cc2
-          (do
-              rn1_var $= du1_val
-              rn2_var $= du2_val
-          ) elseV
-    ) elseV
-
+        ifElse
+          cc2
+          (do rn1_var $= du1_val
+              rn2_var $= du2_val)
+          elseV)
+    elseV
 decompile1 (MOVES t toMem ea rn) =
   let ct = toCType t False
       rnV = rnVar ct rn
       memM = operand2Var (Address ea) ct
-  in if toMem then do
-    mem <- memM
-    v <- readVar rnV
-    mem $= v
-  else do
-    mem <- memM
-    rnV $=^ mem
-
-
+   in if toMem
+        then do
+          mem <- memM
+          v <- readVar rnV
+          mem $= v
+        else do
+          mem <- memM
+          rnV $=^ mem
 decompile1 (MOVEP t toMem ar im dr) = do
   let addr x = Member int8 (anVar (PTR uint8) ar) (im + x)
   dv <- dnVal uint32 dr
-  let dvn = map (\x -> cast uint8 (dv $>># x) ) [24,16,8,0]
+  let dvn = map (\x -> cast uint8 (dv $>># x)) [24, 16, 8, 0]
   (if toMem
-    then ( do
-             addr 0 $= dvn !! 3
-             addr 2 $= dvn !! 4
-             (if t == LONG
-              then (do
-                       addr 4 $= dvn !! 2
-                       addr 6 $= dvn !! 1
-                   )
-               else stmtNop)
-         ) else (do
-                    let v0 = VarValue $ addr 0
-                        v1 = VarValue $ addr 2
-                        v2 = VarValue $ addr 4
-                        v3 = VarValue $ addr 6
-                    let h = (v0 $<<# 8) $| v1
-                        l = (v2 $<<# 8) $| v3
-                    if t == WORD
-                      then
-                      dnVar uint16 dr $= h
-                      else
-                      dnVar uint32 dr $=
-                      ((cast uint32 h $<<# 16) $| cast uint32 l)))
-
+     then (do addr 0 $= dvn !! 3
+              addr 2 $= dvn !! 4
+              (if t == LONG
+                 then (do addr 4 $= dvn !! 2
+                          addr 6 $= dvn !! 1)
+                 else stmtNop))
+     else (do let v0 = VarValue $ addr 0
+                  v1 = VarValue $ addr 2
+                  v2 = VarValue $ addr 4
+                  v3 = VarValue $ addr 6
+              let h = (v0 $<<# 8) $| v1
+                  l = (v2 $<<# 8) $| v3
+              if t == WORD
+                then dnVar uint16 dr $= h
+                else dnVar uint32 dr $=
+                     ((cast uint32 h $<<# 16) $| cast uint32 l)))
 decompile1 (MOVE _ CCR dst) = do
   dstV <- operand2Var dst uint16
   cc <- getcc
   dstV $= cc
-
 decompile1 (MOVE _ SR dst) = do
   dstV <- operand2Var dst uint16
   cc_o <- getcc
   cc_i <- readCC 'I'
   let sr_i = cast uint16 cc_i $<<# 8
   dstV $= sr_i $| cc_o
-
 decompile1 (MOVE _ (SpRG c) dst) = do
   dstV <- operand2Var dst uint32
-  dstV $=^ SPVar uint32 c
-
+  dstV $=^ GVar uint32 c
 decompile1 (MOVE _ src CCR) = do
   srcVal <- operand2Value src uint16
   setcc srcVal
-
 decompile1 (MOVE _ src SR) = do
   srcVal <- operand2Value src uint16
   setcc srcVal
   writeCC 'I' $ cast uint8 (srcVal $>># 8)
-
 decompile1 (MOVE _ src (SpRG s)) = do
   srcVal <- operand2Value src uint16
-  SPVar uint32 s $= srcVal
-
+  GVar uint32 s $= srcVal
 decompile1 (MOVE t src dst) = do
   let ct = toCType t False
   srcValue <- operand2Value src ct
@@ -526,12 +533,10 @@ decompile1 (MOVE t src dst) = do
   defaultNZ srcValue
   nullCV
   dstV $= srcValue
-
 decompile1 (MOVEA t src dstN) = do
   let ct = toCType t True
   srcValue <- operand2Value src ct
   anVar ct dstN $= srcValue
-
 decompile1 (NEGX t ea) = do
   let ct = toCType t True
   dst <- operand2Var ea ct
@@ -545,7 +550,6 @@ decompile1 (NEGX t ea) = do
   defaultNZ dstValue
   cmpCV (Const ct 0) dstValue
   updateX
-
 decompile1 (CLR t ea) = do
   let ct = toCType t False
   dst <- operand2Var ea ct
@@ -553,19 +557,17 @@ decompile1 (CLR t ea) = do
   dst $= newv
   nullCV
   defaultNZ newv
-
 decompile1 (NEG t ea) = do
   let ct = toCType t True
   dst <- operand2Var ea ct
   tmp <- newVar ct
   oldValue <- readVar dst
   tmp $= oldValue
-  dst $= neg ( VarValue tmp )
+  dst $= neg (VarValue tmp)
   dstValue <- readVar dst
   defaultNZ dstValue
   cmpCV (Const ct 0) $ VarValue tmp
   updateX
-
 decompile1 (NOT t ea) = do
   let ct = toCType t False
   dst <- operand2Var ea ct
@@ -574,12 +576,10 @@ decompile1 (NOT t ea) = do
   dstVal <- readVar dst
   nullCV
   defaultNZ dstVal
-
 decompile1 (TST t ea) = do
   src <- operand2Value ea (toCType t True)
   nullCV
   defaultNZ src
-
 decompile1 (NBCD _ ea) = do
   dst <- operand2Var ea BCD
   tmp <- newVar BCD
@@ -593,26 +593,20 @@ decompile1 (NBCD _ ea) = do
   writeCC 'C' $ Op1 "-C" $ VarValue tmp
   clearCcS
   updateX
-
 decompile1 (TAS _ ea) = do
   dst <- operand2Var ea uint8
   dstV <- readVar dst
   nullCV
   defaultNZ dstV
   dst $|= Const uint8 0x80
-
 decompile1 (MULUL ea dr) = decompileMulL uint32 ea dr
 decompile1 (MULSL ea dr) = decompileMulL int32 ea dr
-
 decompile1 (MULULL ea dh dl) = decompileMulLL uint32 ea dh dl
 decompile1 (MULSLL ea dh dl) = decompileMulLL int32 ea dh dl
-
 decompile1 (DIVUL ea dr dq) = decompileDivL uint32 ea dr dq
 decompile1 (DIVSL ea dr dq) = decompileDivL int32 ea dr dq
-
 decompile1 (DIVULL ea dr dq) = decompileDivLL uint32 ea dr dq
 decompile1 (DIVSLL ea dr dq) = decompileDivLL int32 ea dr dq
-
 decompile1 (SWAP dn) = do
   let dd = dnVar uint32 dn
   oldV <- readVar dd
@@ -620,28 +614,22 @@ decompile1 (SWAP dn) = do
   newV <- readVar dd
   nullCV
   defaultNZ newV
-
 decompile1 (TRAPn n) = do
   newStmt $ Trap $ Just n
-
 decompile1 (LINK rn imm) = do
-  FromEnv $ modify $ \e -> e { v_savedSp = v_sp e:v_savedSp e }
-  val <- readAn uint32 rn
+  FromEnv $ modify $ \e -> e {v_savedSp = v_sp e : v_savedSp e}
+  val <- readAn rn
   pushValue val
-  sp <- readAn uint32 7
+  sp <- readAn 7
   writeAn rn sp
   allocateSP imm
-
 decompile1 (UNLK rn) = do
-  FromEnv $ modify $ \e -> e { v_sp = head $ v_savedSp e,
-                          v_savedSp = tail $ v_savedSp e
-                        }
-  val <- readAn uint32 rn
+  FromEnv $
+    modify $ \e -> e {v_sp = head $ v_savedSp e, v_savedSp = tail $ v_savedSp e}
+  val <- readAn rn
   writeAn 7 val
-
 decompile1 RESET = do
   newStmt $ ExtAsm "RESET" 0
-
 
 {-
 
@@ -791,9 +779,9 @@ decompile1 (SBCD_REG x y) = do
      ccVar 'Z' $&&=
      VarValue d $==
      Const BCD 0 $$
-     writeCC 'C' $ 
+     writeCC 'C' $
      Op2 (VarValue tmp) "-C" (VarValue s) $$
-     writeCC 'S' $ 
+     writeCC 'S' $
      immNA $$
      updateX)
 decompile1 (SBCD_MEM x y) = do
@@ -812,7 +800,7 @@ decompile1 (SBCD_MEM x y) = do
      ccVar 'Z' $&&=
      tmp_dv $==
      Const BCD 0 $$
-     writeCC 'C' $ 
+     writeCC 'C' $
      Op2 (VarValue tmp) "-C" (VarValue tmp_s) $$
      updateX)
 decompile1 (PACK_REG x y imm) = do
@@ -872,7 +860,7 @@ decompile1 (SUBX_REG t x y) = do
     (tmp $= VarValue d $- cast ct (VarValue $ ccVar 'X') $$ d $-= s $$ ccVar 'Z' $&&=
      VarValue d $==
      Const ct 0 $$
-     writeCC 'N' $ 
+     writeCC 'N' $
      isNegative (VarValue d) $$
      cmpCV (VarValue tmp) s $$
      updateX)
@@ -892,7 +880,7 @@ decompile1 (SUBX_MEM t x y) = do
      ccVar 'Z' $&&=
      derefVal tmp_d $==
      Const ct 0 $$
-     writeCC 'N' $ 
+     writeCC 'N' $
      (isNegative $ VarValue tmp_d) $$
      cmpCV (VarValue tmp_dv) (VarValue tmp_sv) $$
      updateX)
@@ -919,7 +907,7 @@ decompile1 (CMPM t y x) = do
   return
     (tmp_d $=^ d $$ tmp_s $=^ s $$ writeCC 'Z' $  (VarValue tmp_d) $==
      (VarValue tmp_s) $$
-     writeCC 'N' $ 
+     writeCC 'N' $
      isNegative ((VarValue tmp_d) $- (VarValue tmp_s)) $$
      cmpCV (VarValue tmp_d) (VarValue tmp_s))
 decompile1 (EOR t dn ea) = do
@@ -952,7 +940,7 @@ decompile1 (ABCD_REG y x) = do
      ccVar 'Z' $&&=
      (VarValue d) $==
      Const BCD 0 $$
-     writeCC 'C' $ 
+     writeCC 'C' $
      Op2 (VarValue tmp) "+C" s $$
      updateX)
 decompile1 (ABCD_MEM y x) = do
@@ -970,7 +958,7 @@ decompile1 (ABCD_MEM y x) = do
      ccVar 'Z' $&&=
      (VarValue tmp_d) $==
      Const BCD 0 $$
-     writeCC 'C' $ 
+     writeCC 'C' $
      Op2 (VarValue tmp) "+C" (VarValue tmp_sv) $$
      updateX)
 decompile1 (MULSW ea dn) = do
@@ -1027,7 +1015,7 @@ decompile1 (ADDX_REG t y x) = do
      ccVar 'Z' $&&=
      (VarValue d) $==
      Const ct 0 $$
-     writeCC 'N' $ 
+     writeCC 'N' $
      (isNegative $ VarValue d) $$
      (cmpCV (VarValue tmp) (neg s)) $$
      updateX)
@@ -1047,7 +1035,7 @@ decompile1 (ADDX_MEM t y x) = do
      ccVar 'Z' $&&=
      derefVal tmp_d $==
      Const ct 0 $$
-     writeCC 'N' $ 
+     writeCC 'N' $
      (isNegative $ VarValue tmp_d) $$
      cmpCV (VarValue tmp_dv) (neg $ VarValue tmp_sv) $$
      updateX)
@@ -1258,7 +1246,7 @@ decompile1 (ASL_EA ea) = do
   return
     (writeCC 'C' $  (cast BOOL $ (VarValue dst) $&# 0x8000) $$ dst $<<=
      Const uint8 1 $$
-     writeCC 'V' $ 
+     writeCC 'V' $
      ((VarValue dst) $< (Const int16 0)) $!=
      (VarValue $ ccVar 'C') $$
      writeCC 'X' $ ^
@@ -1392,13 +1380,11 @@ getBFValue t ea offset_p width_p = do
 decompile :: Int -> Int -> MEnv -> M.Map Int (Op, Int) -> [(Int, [Stmt MEnv])]
 decompile begin end ev o
   | begin < end =
-      let (op, next) = o M.! begin
-          ret = decompile1 op
-      in case ret of
-           Known _ -> undefined
-           FromEnv s ->
-             let ev' = execState s ev
-             in (begin, v_stmt ev') : decompile next end
-             ( ev' { v_stmt = [] } ) o
+    let (op, next) = o M.! begin
+        ret = decompile1 op
+     in case ret of
+          Known _ -> undefined
+          FromEnv s ->
+            let ev' = execState s ev
+             in (begin, v_stmt ev') : decompile next end (ev' {v_stmt = []}) o
   | otherwise = []
-

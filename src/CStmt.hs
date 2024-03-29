@@ -15,6 +15,10 @@ data StateV c a
   = Known a
   | FromEnv (State c a)
 
+runStateV :: StateV b a -> b -> (a, b)
+runStateV (Known a) e = (a, e)
+runStateV (FromEnv s) e = runState s e
+
 instance Functor (StateV c) where
   fmap f (Known a) = Known (f a)
   fmap f (FromEnv e) = FromEnv (f <$> e)
