@@ -1,6 +1,7 @@
 -- -*- haskell -*-
 module CExpr where
 import CType
+import Control.Monad.State
 
 data Expr
   = Const CType Int
@@ -26,3 +27,6 @@ data Var
   | BitFieldX CType Var Expr Expr -- (non-supported)
   | Index CType Expr Expr -- var[index]
 
+data StateV c a
+  = Known a
+  | FromEnv (State c a)

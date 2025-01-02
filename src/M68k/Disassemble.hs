@@ -1,7 +1,7 @@
 module M68k.Disassemble where
 
-import  M68k.Parse
-import  qualified Data.Set as S
+import M68k.Parse
+import qualified Data.Set as S
 import Text.Printf
 import Data.List
 

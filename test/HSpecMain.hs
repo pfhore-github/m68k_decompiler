@@ -1,9 +1,9 @@
+import           M68k.ConvToRtlSpec
+import           M68k.ParseSpec
 import           Test.Hspec
-import M68k.DecompileSpec
-import UtilSpec
-import M68k.ParseSpec
--- import CExprSpec
+import           UtilSpec
 
+-- import CExprSpec
 main :: IO ()
 main =
   hspec $ do
@@ -11,5 +11,5 @@ main =
 --    testCExpr
     testEA
     testDecode
-    testDecompileEA
-  
+    testEA2
+--    testDecompileEA

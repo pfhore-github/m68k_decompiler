@@ -3,6 +3,7 @@
 
 module M68k.Parse where
 
+import           Control.Monad(mzero)
 import           Control.Monad.State
 import           Control.Monad.Trans.Maybe
 import           Data.Bits                 (Bits (shiftL, shiftR, testBit, (.&.), (.|.)))

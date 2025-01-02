@@ -1,9 +1,8 @@
 module MonadOp where
 -- Monadic operator
-import Env
 import qualified CExpr as C
-import qualified CStmt as S
-import CStmt
+import qualified Mop as S
+import qualified Control.Monad.Operational as O
 
 infix 1 $=
 infix 1 $=^
@@ -17,31 +16,31 @@ infix 1 $|=
 infix 1 $&&=
 infix 1 $||=
 
-($=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($=) = S.assign
 
-($=^) :: (Env a) => C.Var -> C.Var -> StateV a ()
+($=^) :: C.Var -> C.Var -> O.Program S.Stmt ()
 ($=^) dst src = S.assign dst $ C.VarValue src
 
-($+=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($+=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($+=) = S.assignOp "+"
-($-=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($-=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($-=) = S.assignOp "-"
-($*=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($*=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($*=) = S.assignOp "*"
-($/=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($/=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($/=) = S.assignOp "/" 
-($&=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($&=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($&=) = S.assignOp "&"
-($|=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($|=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($|=) = S.assignOp "|"
-($^=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($^=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($^=) = S.assignOp "^"
-($>>=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($>>=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($>>=) = S.assignOp ">>"
-($<<=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($<<=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($<<=) = S.assignOp "<<" 
-($&&=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($&&=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($&&=) = S.assignOp "&&"
-($||=) :: (Env a) => C.Var -> C.Expr -> StateV a ()
+($||=) :: C.Var -> C.Expr -> O.Program S.Stmt ()
 ($||=) = S.assignOp "||" 

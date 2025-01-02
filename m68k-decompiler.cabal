@@ -1,4 +1,4 @@
-cabal-version:   3.4
+cabal-version:   3.12
 name:            m68k-decompiler
 version:         0.1.0.0
 license:         GPL-3.0-or-later
@@ -13,12 +13,13 @@ common default
   ghc-options:      -Wall
   default-language: Haskell2010
   build-depends:
-    , base             ^>=4.17.2.0
-    , hmpfr
+    , base      
     , binary
     , bytestring
     , containers
+    , hmpfr
     , mtl
+    , operational
     , transformers
     , vector
 
@@ -37,8 +38,12 @@ library
     M68k.Env
     M68k.LongDouble
     M68k.Parse
+    M68k.Recompile
+    M68k.ConvToRtl
     MonadOp
+    Mop
     Util
+    RTL.Stmt
 
   hs-source-dirs:  src
 
@@ -51,7 +56,7 @@ executable m68k-decompiler
   -- other-extensions:
 
   build-depends:
-    , base             ^>=4.17.2.0
+    , base             
     , m68k-decompiler
 
   hs-source-dirs: app
@@ -65,18 +70,36 @@ executable m68k-disassembler
   -- other-extensions:
 
   build-depends:
-    , base             ^>=4.17.2.0
+    , base             
     , m68k-decompiler
 
   hs-source-dirs: app
 
-test-suite m68k-decompiler-test
+executable m68k-dumprtl
+  import:         default
+  main-is:        dumprtl.hs
+
+  -- other-modules:
+
+  -- other-extensions:
+
+  build-depends:
+    , base             
+    , m68k-decompiler
+
+  hs-source-dirs: app
+
+test-suite m68k-dumprtl-test
   import:           default
   default-language: Haskell2010
 
   -- cabal-fmt: expand test
-  other-modules: TestCommon UtilSpec M68k.DecompileSpec CExprSpec M68k.ParseSpec
-  
+  other-modules:
+    M68k.ConvToRtlSpec
+    TestCommon
+    UtilSpec
+    M68k.ParseSpec
+
   -- other-extensions:
 
   type:             exitcode-stdio-1.0
@@ -85,7 +108,8 @@ test-suite m68k-decompiler-test
 
   -- Test dependencies.
   build-depends:
-    , base             ^>=4.17.2.0
-    , m68k-decompiler
+    , base             
     , hspec
+    , m68k-decompiler
     , QuickCheck
+

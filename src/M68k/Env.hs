@@ -2,7 +2,7 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use tuple-section" #-}
 module M68k.Env
-  ( MEnv(MEnv, v_dr, v_ar, v_cc, v_stmt, v_sp, v_savedSp)
+  ( MEnv(MEnv, v_dr, v_ar, v_cc, v_sp, v_savedSp)
   , readDn
   , readAn
   , readCC
@@ -34,51 +34,49 @@ data MEnv =
     , v_cc    :: M.Map Char Expr
     , v_stack :: M.Map Int Expr
     , v_sp    :: Int
-    , v_stmt :: [Stmt MEnv]
     , v_vars :: [Var]
     , v_savedSp :: [Int]
-    }
+    } 
 
 emptyEnv :: MEnv
 emptyEnv = MEnv {
   v_dr = V.replicate 8 Nothing,
   v_ar = V.replicate 8 Nothing,
-  v_cc = M.empty,
+  v_cc = M.fromList [('C', immF), ('V', immF), ('Z', immF), ('N', immF), ('X', immF), ('I', Const int8 0)],
   v_stack = M.empty,
   v_sp = 0,
-  v_stmt = [],
   v_vars = [],
   v_savedSp = []
 }
 
 
 
-readDn_ :: Int -> StateV MEnv (Maybe Expr)
-readDn_ n = FromEnv $ do
+readDn_ :: Int -> State MEnv (Maybe Expr)
+readDn_ n = do
   e <- get
   return $ v_dr e V.! n
 
-readAn_ :: Int -> StateV MEnv (Maybe Expr)
-readAn_ n = FromEnv $ do
+readAn_ :: Int -> State MEnv (Maybe Expr)
+readAn_ n = do
   e <- get
   return $ v_ar e V.! n
 
-readCC_ :: Char -> StateV MEnv (Maybe Expr)
-readCC_ c = FromEnv $ do
+readCC_ :: Char -> State MEnv (Maybe Expr)
+readCC_ c = do
   e <- get
   return $ v_cc e M.!? c
 
-writeDn_ :: Int -> Expr -> StateV MEnv ()
-writeDn_ n v = FromEnv $ do
+writeDn_ :: Int -> Expr -> State MEnv ()
+writeDn_ n v = do
   modify $ \e -> e {v_dr = V.modify (\x -> MV.write x n $ Just v) (v_dr e)}
 
-writeAn_ :: Int -> Expr -> StateV MEnv ()
-writeAn_ n v = FromEnv $ do
+writeAn_ :: Int -> Expr -> State MEnv ()
+writeAn_ n v = do
    modify $ \e -> e {v_ar = V.modify (\x -> MV.write x n $ Just v) (v_ar e)}
 
-writeCC_ :: Char -> Expr -> StateV MEnv ()
-writeCC_ c v = FromEnv $ do
-  modify $ \e -> e {v_cc = M.adjust (const v) c (v_cc e)}
+writeCC_ :: Char -> Expr -> State MEnv ()
+writeCC_ c v = do
+  modify $ \e -> e {v_cc = M.insert c v (v_cc e)}
 
 
 instance Env MEnv where
@@ -182,20 +180,15 @@ instance Env MEnv where
          x)
   writeReg _ _ = do
     return ()
+  readStack t i = do
+    e <- get
+    return $ cast t $ v_stack e M.! i
   getSP = v_sp
-  getSPM = FromEnv $ do
-    gets v_sp
-  modifySP f = FromEnv $ do
+  getSPM = gets v_sp
+  modifySP f = do
     modify $ \e -> e {v_sp = f (v_sp e)}
 
-  newStmt s = FromEnv $ do
-    modify $ \e -> e { v_stmt = v_stmt e++ [s]}
-  dumpStmt = FromEnv $ do
-    e <- get
-    let re = v_stmt e
-    put e { v_stmt = [] }
-    return re
-  newVar t = FromEnv $ do
+  newVar t = do
     e <- get
     let v = TVar t $ length $ v_vars e
     put e { v_vars = v : v_vars e}
@@ -218,13 +211,13 @@ instance Env MEnv where
          v_cc = M.empty }
     return re
 
-pushValue :: Expr -> StateV MEnv ()
+pushValue :: Expr -> State MEnv ()
 pushValue v = do
   sp <- getSPM
   modifySP (+4)
   oldsp <- readReg uint32 "A7"
   writeReg "A7" (oldsp $+# 4)
-  FromEnv $ modify $ \e -> e {v_stack = M.insert sp v (v_stack e)}
+  modify $ \e -> e {v_stack = M.insert sp v (v_stack e)}
 
 getStackValue :: Int -> State MEnv (Maybe Expr)
 getStackValue pos =
@@ -234,19 +227,20 @@ getStackValue pos =
    in state getV
 
 
-readDn :: CType -> Int -> StateV MEnv Expr
+readDn :: CType -> Int -> State MEnv Expr
 readDn t n = readReg t ['D', intToDigit n]
-readAn :: Int -> StateV MEnv Expr
+readAn :: Int -> State MEnv Expr
 readAn n = readReg (PTR VOID) ['A', intToDigit n]
-readCC :: Char -> StateV MEnv Expr
+readCC :: Char -> State MEnv Expr
 readCC c = readReg (if c == 'I' then uint8 else BOOL) ['C',c]
 
 writeDn :: Int -> Expr -> StateV MEnv ()
-writeDn n = writeReg ['D', intToDigit n]
-writeAn :: Int -> Expr -> StateV MEnv()
-writeAn n = writeReg ['A', intToDigit n]
-writeCC :: Char -> Expr -> StateV MEnv()
+writeDn n v = doWriteInEnv $ writeReg ['D', intToDigit n] v
+writeAn :: Int -> Expr -> StateV MEnv ()
+writeAn n v = doWriteInEnv $ writeReg ['A', intToDigit n] v 
+writeCC :: Char -> Expr -> State MEnv ()
 writeCC c = writeReg ['C',c]
 
-clearCcS :: StateV MEnv ()
-clearCcS = FromEnv (state (\e -> ((), e {v_cc = M.delete 'S' (v_cc e)})))
+clearCcS :: State MEnv ()
+clearCcS = do 
+  modify (\e -> e {v_cc = M.delete 'S' (v_cc e)})

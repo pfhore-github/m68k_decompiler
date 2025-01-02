@@ -1,47 +1,17 @@
 {-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 
-module M68k.Decompile where
-{-
--- decompile 1st phase
-import           CExpr
+module M68k.ConvToRtl where
+
 import           CType
-import           Control.Monad (when)
-import           Data.Bits
-import qualified Data.Map            as M
-import           Env
-import           M68k.Env
+import           Data.Bits   ((.&.), (.<<.), (.>>.))
 import           M68k.Parse
-import           MonadOp
-import           Text.Printf
-import qualified Control.Monad.Operational as O
-import Mop
 
+-- decompile 1st phase
+import           RTL.Stmt    (RtlExpr (..), RtlStmt (..), RtlVar (..), typeOfE,
+                              typeOfV)
+import           Text.Printf (printf)
 
-dnVar :: CType -> Int -> Var
-dnVar t n = EnvVar t $ printf "D%d" n
-
-anVar :: CType -> Int -> Var
-anVar t n = EnvVar t $ printf "A%d" n
-
-ccVar :: Char -> Var
-ccVar c = EnvVar (if c == 'I' then uint8 else BOOL) ['C', c]
-
-dnVal :: CType -> Int -> Expr
-dnVal t n = VarValue $ dnVar t n
-anVal :: CType -> Int -> Expr
-anVal t n = VarValue $ anVar t n
-rnVal :: CType -> Int -> Expr
-rnVal t n = VarValue $ rnVar t n
-ccVal :: Char -> Expr
-ccVal = VarValue . ccVar
-
-rnVar :: CType -> Int -> Var
-rnVar t n =
-  if n > 7
-    then anVar t (n - 8)
-    else dnVar t n
-
-
+{-
 scale2Type :: Int -> CType
 scale2Type c = INT False (1 `shiftR` c)
 
@@ -72,324 +42,184 @@ cc2Cond cc =
       15 -> CondExpr (s $!= immNA) (lNot s) ((n $!= v) $|| z)
       _  -> undefined
 
-applyEaBase :: AddrBase -> Int -> CType -> Var
-applyEaBase (BaseAR 7) bd t = SVar t bd
-applyEaBase (BaseAR r) bd t = pMemberOf t (anVal (PTR VOID) r) bd
-applyEaBase (BasePC pc) bd t = GVar t $ printf "C_%05X" $ pc + bd
-applyEaBase BaseNone bd t = GVar t $ printf "G_%05X" bd
 
-getIndex :: Bool -> Int -> Expr
-getIndex True rn  = cast int32 $ rnVal int16 rn
-getIndex False rn = rnVal uint32 rn
 
-applyRn :: Var -> Bool -> Maybe Int -> Int -> CType -> Expr
+
+
+-}
+toCType :: AType -> Bool -> CType
+toCType t sg =
+  INT
+    sg
+    (case t of
+       BYTE -> 1
+       WORD -> 2
+       LONG -> 4)
+
+dr :: CType -> Int -> RtlVar
+dr t n = RtlReg t $ printf "D%d" n
+
+ar :: CType -> Int -> RtlVar
+ar t n = RtlReg t $ printf "A%d" n
+
+xr :: CType -> Int -> RtlVar
+xr t n
+  | n < 8 = dr t n
+  | otherwise = ar t (n - 8)
+
+operand2Expr :: Operand -> CType -> RtlExpr
+operand2Expr (ImmInt v) t = ExprImm t v
+operand2Expr c t          = ExprVar $ operand2Var c t
+
+applyEaBase :: AddrBase -> Int -> CType -> RtlVar
+applyEaBase (BaseAR r) bd t  = RtlMemoryI t (ar (PTR VOID) r) bd
+applyEaBase (BasePC pc) bd t = RtlMemoryC t $ pc + bd
+applyEaBase BaseNone bd t    = RtlMemoryG t bd
+
+-- base + rn.w*cc
+applyRn :: RtlVar -> Bool -> Maybe Int -> Int -> CType -> RtlVar
 applyRn base w (Just rn) c t =
-  let index = getIndex w rn
-      shiftT = shiftSizeOf t
-  in addrOf $ cast (PTR t) (addrOf base) $@ (index $<<# (c - shiftT))
-applyRn base _ Nothing _ _ = addrOf base
+  let getIndex :: Bool -> Int -> RtlExpr
+      getIndex True n  = ExprCast int32 $ ExprVar $ xr int16 n
+      getIndex False n = ExprVar $ xr int32 n
+      index = getIndex w rn
+   in RtlMemoryD t base c index
+applyRn base _ Nothing _ _ = base
 
-operand2Value :: Operand -> CType -> Expr
-operand2Value (ImmInt v) t = Const t v
-operand2Value (DR r) t     = dnVal t r
-operand2Value (AR r) t     = anVal t r
-operand2Value x t          = VarValue $ operand2Var x t
-
-operand2Addr :: MemOperand -> CType -> Expr
-operand2Addr (UnRefAR r) t = anVal t r
-operand2Addr (UnRefInc r) t = IncDec True True $ anVar (PTR t) r
-operand2Addr (UnRefDec r) t = IncDec False False $ anVar (PTR t) r
-operand2Addr (Offset16 d b) t = addrOf $ applyEaBase b d t
-operand2Addr (Offset8 d base w rn cc) t =
-  let base1 = applyEaBase base d t
-  in applyRn base1 w (Just rn) cc t
-operand2Addr (Indirect bd base w rn cc) t =
-  let base1 = applyEaBase base bd t
-  in applyRn base1 w rn cc t
-operand2Addr (PreIndex bd base w rn cc od) t =
+operand2Var :: Operand -> CType -> RtlVar
+operand2Var (DR r) t = dr t r
+operand2Var (AR r) t = ar t r
+operand2Var (Address (UnRefAR r)) t = RtlMemory $ ar (PTR t) r -- (An)
+operand2Var (Address (UnRefInc r)) t =
+  RtlMemory $ RtlIncDec True True $ ar (PTR t) r -- (An+)
+operand2Var (Address (UnRefDec r)) t =
+  RtlMemory $ RtlIncDec False False $ ar (PTR t) r -- (-An)
+operand2Var (Address (Offset16 d base)) t = applyEaBase base d t -- (d, An/PC/0)
+operand2Var (Address (Offset8 d base w rn cc)) t -- (d, An/PC/0, rn.w*cc)
+ =
+  let base1 = applyEaBase base d (PTR VOID)
+   in applyRn base1 w (Just rn) cc t
+operand2Var (Address (Indirect bd base w rn cc)) t -- (bd, An/PC/0, rn.w*cc)
+ =
+  let base1 = applyEaBase base bd (PTR VOID)
+   in applyRn base1 w rn cc t
+operand2Var (Address (PreIndex bd base w rn cc od)) t -- ([bd, An/PC/0, rn.w*cc], od)
+ =
   let base1 = applyEaBase base bd $ PTR VOID
-      base2 = applyRn base1 w rn cc (PTR VOID)
-  in addrOf $ pMemberOf t base2 od
-operand2Addr (PostIndex bd base w rn cc od) t =
+      base2 = applyRn base1 w rn cc t
+   in RtlMemoryI t base2 od
+operand2Var (Address (PostIndex bd base w rn cc od)) t -- ([bd, An/PC/0], rn.w*cc, od)
+ =
   let base1 = applyEaBase base bd $ PTR VOID
-  in applyRn (memberOf t base1 od) w rn cc t
-operand2Addr (ImmAddr addr) t = addrOf $ GVar t $ printf "G_%05X" addr
+   in applyRn (RtlMemoryI t base1 od) w rn cc t
+operand2Var (Address (ImmAddr addr)) t = RtlMemoryG t addr
+operand2Var _ _ = undefined
 
-operand2Var :: Operand -> CType -> Var
-operand2Var (DR r) t      = dnVar t r
-operand2Var (AR r) t      = anVar t r
-operand2Var (Address c) t = deref $ operand2Addr c t
-operand2Var _ _           = undefined
+doCCRFlags :: (RtlVar -> RtlExpr -> a) -> Int -> [a]
+doCCRFlags op v =
+  [ op (RtlReg BOOL "C") $ ExprImm BOOL ((v .>>. 0) .&. 1)
+  , op (RtlReg BOOL "V") $ ExprImm BOOL ((v .>>. 1) .&. 1)
+  , op (RtlReg BOOL "Z") $ ExprImm BOOL ((v .>>. 2) .&. 1)
+  , op (RtlReg BOOL "N") $ ExprImm BOOL ((v .>>. 3) .&. 1)
+  , op (RtlReg BOOL "X") $ ExprImm BOOL ((v .>>. 4) .&. 1)
+  ]
 
-derefVal :: Var -> Expr -- *var
-derefVal v = VarValue $ deref $ VarValue v
+doSRFlags :: (RtlVar -> RtlExpr -> a) -> Int -> [a]
+doSRFlags op v =
+  [ op (RtlReg uint8 "I") $ ExprImm uint8 ((v .>>. 8) .&. 7)
+  , op (RtlReg BOOL "M") $ ExprImm BOOL ((v .>>. 12) .&. 1)
+  , op (RtlReg BOOL "S") $ ExprImm BOOL ((v .>>. 13) .&. 1)
+  , op (RtlReg uint8 "T") $ ExprImm uint8 ((v .>>. 14) .&. 3)
+  ]
 
-isNegative :: Expr -> Expr
-isNegative v = cast int32 v $< Const int32 0
-
-type DecompileRet = O.Program Stmt ()
-
-defaultNZ :: Expr -> DecompileRet
-defaultNZ v = do
-  ccVar 'Z' $= v $!= Const int32 0
-  ccVar 'N' $= isNegative v
-  ccVar 'S' $= Const BOOL (-1)
-
-
-cmpCV :: Expr -> Expr -> DecompileRet
-cmpCV x y = do
-  let x_s = cast (toSigned (typeOf x)) x
-      y_s = cast (toSigned (typeOf y)) y
-      x_u = cast (toUnsigned (typeOf x)) x
-      y_u = cast (toUnsigned (typeOf y)) y
-  ccVar 'C' $= x_u $< y_u
-  ccVar 'V' $= x_s `subV` y_s
-  ccVar 'S' $= x_s $> y_s
-
-nullCV :: DecompileRet
-nullCV = do
-  ccVar 'C' $=immF
-  ccVar 'V' $=immF
-  ccVar 'S' $= Const BOOL (-1)
-
-updateX :: DecompileRet
-updateX = do
-  let v = VarValue $ ccVar 'C'
-  ccVar 'X' $= v
-
-getcc :: Expr
-getcc =
-  let c = cast uint16 $ ccVal 'C'
-      v = cast uint16 $ ccVal 'V'
-      z = cast uint16 $ ccVal 'Z'
-      n = cast uint16 $ ccVal 'N'
-      x = cast uint16 $ ccVal 'X'
-  in c $| (v $<<# 1) $| (z $<<# 2) $| (n $<<# 3) $| (x $<<# 4)
-
-setcc :: Expr -> DecompileRet
-setcc v = do
-  ccVar 'C' $= cast BOOL (v $&# 1)
-  ccVar 'V' $= cast BOOL (v $&# 2)
-  ccVar 'Z' $= cast BOOL (v $&# 4)
-  ccVar 'N' $= cast BOOL (v $&# 8)
-  ccVar 'X' $= cast BOOL (v $&# 16)
-  ccVar 'S' $= Const BOOL (-1)
-
-decompileImmCR :: String -> Int -> DecompileRet
-decompileImmCR op v =
-  let updateCC c n = do
-        let oldC = VarValue $ ccVar c
-        ccVar c $= op2 op oldC (Const BOOL $ if v .&. n /= 0 then 1 else 0)
-  in do
-      updateCC 'C' 1
-      updateCC 'V' 2
-      updateCC 'Z' 4
-      updateCC 'N' 8
-      updateCC 'X' 16
-      ccVar 'S' $= Const BOOL (-1)
-
-decompileImmSR :: String -> Int -> DecompileRet
-decompileImmSR op v = do
-  let i = VarValue $ ccVar 'I'
-  decompileImmCR op v
-  ccVar 'I' $= op2 op i (Const uint8 (v `shiftR` 8))
-
-bitmask :: CType -> BopSc -> Expr
-bitmask t (BImm v) = Const t (1 `shiftL` v)
-bitmask t (BReg n) = Const t 1 $<< dnVal uint8 n
-
-spVar :: Var
-spVar = EnvVar (PTR uint16) "A7"
-
-
-decompileBxxx :: String -> AType -> Operand -> BopSc -> DecompileRet
-decompileBxxx op t ea pos = do
+toRtl :: (Int, Op) -> [RtlStmt]
+toRtl (_, ORI BYTE CCR v) = doCCRFlags StmtAssignOr v
+toRtl (i, ORI WORD SR v) = toRtl (i, ORI BYTE CCR v) ++ doSRFlags StmtAssignOr v
+toRtl (_, ORI t ea v) =
   let ct = toCType t False
-      ea_var = operand2Var ea (toCType t False)
-      tmp_var = TVar ct 1
-      ea_val = cast ct $ VarValue ea_var
-  tmp_var $= ea_val
-  let mask = bitmask ct pos
-  assignOp op ea_var mask
-  ccVar 'Z' $= lNot (VarValue tmp_var) $& mask
-
-decompile1MoveMPush :: CType -> [Int] -> DecompileRet
-decompile1MoveMPush t regs =
-  let pushV x = do
-        allocateSP (sizeOf t)
-        let var = SVar t 0
-            val = rnVal t x
-        var $= val
-   in mapM_ pushV (reverse regs)
-
-decompile1MoveMDecr :: CType -> Int -> [Int] -> Int -> DecompileRet
-decompile1MoveMDecr t sz regs an = do
-  let base = anVar t an
-      regsR = reverse $ zip [0 ..] regs
-      len = length regs
-      temp = TVar t 1
-  temp $= (VarValue base $+# (-(len * sz)))
-  mapM_
-    (\(i, n) -> do
-       let val = rnVal t n
-       (VarValue base $@# i) $= val)
-    regsR
-  base $=^ temp
-
-decompile1MoveMToMem :: CType -> MemOperand -> [Int] -> DecompileRet
-decompile1MoveMToMem t ea regs = do
-  let temp = TVar t 1
-      base = operand2Addr ea (PTR t)
-      rs = zip [0 ..] regs
-  temp $= base
-  mapM_
-    (\(i, n) -> do
-       let val = rnVal t n
-       (VarValue temp $@# i) $= val)
-    rs
-
-decompile1MoveMPop :: CType -> [Int] -> DecompileRet
-decompile1MoveMPop t =
-  mapM_
-    (\x -> do
-       let top = SVar t 0
-       rnVar t x $=^ Deref (VarValue top)
-       top $+= Const int32 (sizeOfS t))
-
-decompile1MoveMIncr :: CType -> Int -> [Int] -> Int -> DecompileRet
-decompile1MoveMIncr t sz regs an = do
-  let base = anVar t an
-      regsR = zip [0 ..] regs
-      len = length regs
-      temp = TVar t 1
-  temp $=^ base
-  mapM_ (\(i, n) -> rnVar t n $=^ (VarValue temp $@# i)) regsR
-  base $= (VarValue temp $+# (len * sz))
-
-decompile1MoveMFromMem :: CType -> MemOperand -> [Int] -> DecompileRet
-decompile1MoveMFromMem t ea regs = do
-  let rs = zip [0 ..] regs
-      temp = TVar t 1
-      base = operand2Addr ea (PTR t)
-  temp $= base
-  mapM_ (\(i, n) -> rnVar t n $=^ (VarValue temp $@# i)) rs
-
-decompileMulL :: CType -> Operand -> Int -> DecompileRet
-decompileMulL t ea dr = do
-  let src = operand2Value ea t
-      dst = dnVar t dr
-      dstV = VarValue dst
-      (h, l) = Cast t dstV $** Cast t src
-  ccVar 'V' $= cast BOOL h
-  ccVar 'C' $=immF
-  dst $= l
-  defaultNZ dstV
-
-decompileMulLL :: CType -> Operand -> Int -> Int -> DecompileRet
-decompileMulLL t ea dh dl = do
-  let src = operand2Value ea t
-      dstH = dnVar t dh
-      dstL = dnVar t dl
-      zero = Const t 0
-      oldL = VarValue dstL
-      (h, l) = Cast t oldL $** Cast t src
-      retH = VarValue dstH
-      retL = VarValue dstL
-  dstH $= h
-  dstL $= l
-  ccVar 'V' $=immF
-  ccVar 'C' $=immF
-  ccVar 'Z' $= (retH $== zero) $&& (retL $== zero)
-  ccVar 'N' $= isNegative retH
-  ccVar 'S' $= Const BOOL (-1)
-
-decompileDivL :: CType -> Operand -> Int -> Int -> DecompileRet
-decompileDivL t ea dr dq = do
-  let src = operand2Value ea t
-      dstR = dnVar t dr
-      dstQ = dnVar t dq
-      qv = VarValue dstQ
-      tmp = TVar t 1
-  ccVar 'V' $=immF
-  ccVar 'C' $=immF
-  tmp $= qv
-  dstQ $/= src
-  when (dr /= dq) $ dstR $= VarValue tmp $% src
-  defaultNZ qv
-
-decompileDivLL :: CType -> Operand -> Int -> Int -> DecompileRet
-decompileDivLL t ea dr dq = do
-  let src = operand2Value ea t
-      dstR = dnVar t dr
-      dstQ = dnVar t dq
-      rv = VarValue dstR
-      qv = VarValue dstQ
-      tmpH = TVar t 1
-      tmpL = TVar t 2
-  tmpH $= rv
-  tmpL $= qv
-  let lval = Expr2 (VarValue tmpH) (VarValue tmpL)
-  dstR $= lval $% src
-  dstQ $= lval $/ src
-  ccVar 'V' $= lval $/! src
-  ccVar 'C' $= immF
-  defaultNZ qv
-
-decompile1 :: Op -> DecompileRet
-decompile1 (ORI _ CCR v) = decompileImmCR "|" v
-decompile1 (ORI _ SR v) = decompileImmSR "|" v
-decompile1 (ORI t ea v) = do
+      imm = ExprImm ct v
+      dst = operand2Var ea ct
+   in [ StmtAssignOr dst imm
+      , StmtAssign (RtlReg BOOL "V") (ExprImm BOOL 0)
+      , StmtAssign (RtlReg BOOL "C") (ExprImm BOOL 0)
+      , StmtAssign (RtlReg BOOL "Z") $ ExprLNot $ ExprVar dst
+      , StmtAssign (RtlReg BOOL "N") $ ExprLt (ExprVar dst) (ExprImm ct 0)
+      ]
+toRtl (_, ANDI BYTE CCR v) = doCCRFlags StmtAssignAnd v
+toRtl (i, ANDI WORD SR v) =
+  toRtl (i, ANDI BYTE CCR v) ++ doSRFlags StmtAssignAnd v
+toRtl (_, ANDI t ea v) =
   let ct = toCType t False
-      imm = Const ct v
+      imm = ExprImm ct v
       dst = operand2Var ea ct
-  dst $|= imm
-  nullCV
-  defaultNZ (VarValue dst)
-decompile1 (ANDI _ CCR v) = decompileImmCR "&" v
-decompile1 (ANDI _ SR v) = decompileImmSR "&" v
-decompile1 (ANDI t ea v) = do
+   in [ StmtAssignAnd dst imm
+      , StmtAssign (RtlReg BOOL "V") (ExprImm BOOL 0)
+      , StmtAssign (RtlReg BOOL "C") (ExprImm BOOL 0)
+      , StmtAssign (RtlReg BOOL "Z") $ ExprLNot $ ExprVar dst
+      , StmtAssign (RtlReg BOOL "N") $ ExprLt (ExprVar dst) (ExprImm ct 0)
+      ]
+toRtl (_, EORI BYTE CCR v) = doCCRFlags StmtAssignXor v
+toRtl (i, EORI WORD SR v) =
+  toRtl (i, EORI BYTE CCR v) ++ doSRFlags StmtAssignXor v
+toRtl (_, EORI t ea v) =
   let ct = toCType t False
-      imm = Const ct v
+      imm = ExprImm ct v
       dst = operand2Var ea ct
-  dst $&= imm
-  nullCV
-  defaultNZ (VarValue dst)
-decompile1 (EORI _ CCR v) = decompileImmCR "^" v
-decompile1 (EORI _ SR v) = decompileImmSR "^" v
-decompile1 (EORI t ea v) = do
+   in [ StmtAssignXor dst imm
+      , StmtAssign (RtlReg BOOL "V") (ExprImm BOOL 0)
+      , StmtAssign (RtlReg BOOL "C") (ExprImm BOOL 0)
+      , StmtAssign (RtlReg BOOL "Z") $ ExprLNot $ ExprVar dst
+      , StmtAssign (RtlReg BOOL "N") $ ExprLt (ExprVar dst) (ExprImm ct 0)
+      ]
+toRtl (_, SUBI t ea v) =
   let ct = toCType t False
-      imm = Const ct v
+      imm = ExprImm ct v
       dst = operand2Var ea ct
-  dst $^= imm
-  nullCV
-  defaultNZ (VarValue dst)
-decompile1 (SUBI t ea v) = do
-  let ct = toCType t True
-      imm = Const ct v
-      tmp = TVar ct 1
+   in [ StmtAssign (RtlReg BOOL "V") $ ExprSubV (ExprVar dst) imm
+      , StmtAssign (RtlReg BOOL "C") $ ExprSubC (ExprVar dst) imm
+      , StmtAssign (RtlReg BOOL "X") $ ExprVar $ (RtlReg BOOL "C")
+      , StmtAssignSub dst imm
+      , StmtAssign (RtlReg BOOL "Z") $ ExprLNot $ ExprVar dst
+      , StmtAssign (RtlReg BOOL "N") $ ExprLt (ExprVar dst) (ExprImm ct 0)
+      ]
+toRtl (_, ADDI t ea v) =
+  let ct = toCType t False
+      imm = ExprImm ct v
       dst = operand2Var ea ct
-  tmp $=^ dst
-  dst $-= imm
-  defaultNZ (VarValue dst)
-  cmpCV (VarValue tmp) imm
-  updateX
-decompile1 (ADDI t ea v) = do
-  let ct = toCType t True
-      imm = Const ct v
-      tmp = TVar ct 1
+   in [ StmtAssign (RtlReg BOOL "V") $ ExprAddV (ExprVar dst) imm
+      , StmtAssign (RtlReg BOOL "C") $ ExprAddC (ExprVar dst) imm
+      , StmtAssign (RtlReg BOOL "X") $ ExprVar $ (RtlReg BOOL "C")
+      , StmtAssignAdd dst imm
+      , StmtAssign (RtlReg BOOL "Z") $ ExprLNot $ ExprVar dst
+      , StmtAssign (RtlReg BOOL "N") $ ExprLt (ExprVar dst) (ExprImm ct 0)
+      ]
+toRtl (_, CMPI t ea v) =
+  let ct = toCType t False
+      imm = ExprImm ct v
       dst = operand2Var ea ct
-  tmp $=^ dst
-  dst $+= imm
-  defaultNZ (VarValue dst)
-  cmpCV (VarValue tmp) (neg imm)
-  updateX
-decompile1 (CMPI t ea v) = do
-  let ct = toCType t True
-      imm = Const ct v
-      dst = operand2Value ea ct
-  ccVar 'Z' $= dst $== imm
-  ccVar 'N' $= isNegative (dst $- imm)
-  cmpCV dst imm
+   in [ StmtAssign (RtlReg BOOL "V") $ ExprSubV (ExprVar dst) imm
+      , StmtAssign (RtlReg BOOL "C") $ ExprSubC (ExprVar dst) imm
+      , StmtAssign (RtlReg BOOL "Z") $ ExprEq (ExprVar dst) imm
+      , StmtAssign (RtlReg BOOL "N") $ ExprLt (ExprVar dst) imm
+      ]
+toRtl (_, BTST t ea sc) =
+  let ct = toCType t False
+      ea_v = ExprVar $ operand2Var ea ct
+      count = case sc of 
+        BImm n ->  ExprImm uint8 n
+        BReg n -> ExprVar $ dr uint32 n
+   in [ StmtAssign (RtlReg BOOL "Z") $ ExprBitTest ea_v count ]
+toRtl (_, BCHG t ea sc) =
+  let ct = toCType t False
+      ea_v = operand2Var ea ct
+      count = case sc of 
+        BImm n ->  ExprImm uint8 n
+        BReg n -> ExprVar $ dr uint32 n
+   in [ StmtAssign (RtlReg BOOL "Z") $ ExprBitTest (ExprVar ea_v) count,
+        StmtAssignBitFlip ea_v count
+    ]
+{-
+
 decompile1 (BTST t ea sc) = do
   let ct = toCType t False
       ea_v = operand2Value ea ct
@@ -455,6 +285,7 @@ decompile1 (CAS2 t dc1 dc2 du1 du2 rn1 rn2) = do
     elseV
 
 
+{-
 
 decompile1 (MOVES t toMem ea rn) =
   let ct = toCType t False
@@ -1373,3 +1204,136 @@ decompile begin end ev o
 -}
 
 
+decompileBxxx :: String -> AType -> Operand -> BopSc -> DecompileRet
+decompileBxxx op t ea pos = do
+  let ct = toCType t False
+      ea_var = operand2Var ea (toCType t False)
+      tmp_var = TVar ct 1
+      ea_val = cast ct $ VarValue ea_var
+  tmp_var $= ea_val
+  let mask = bitmask ct pos
+  assignOp op ea_var mask
+  ccVar 'Z' $= lNot (VarValue tmp_var) $& mask
+
+decompile1MoveMPush :: CType -> [Int] -> DecompileRet
+decompile1MoveMPush t regs =
+  let pushV x = do
+        allocateSP (sizeOf t)
+        let var = SVar t 0
+            val = rnVal t x
+        var $= val
+   in mapM_ pushV (reverse regs)
+
+decompile1MoveMDecr :: CType -> Int -> [Int] -> Int -> DecompileRet
+decompile1MoveMDecr t sz regs an = do
+  let base = anVar t an
+      regsR = reverse $ zip [0 ..] regs
+      len = length regs
+      temp = TVar t 1
+  temp $= (VarValue base $+# (-(len * sz)))
+  mapM_
+    (\(i, n) -> do
+       let val = rnVal t n
+       (VarValue base $@# i) $= val)
+    regsR
+  base $=^ temp
+
+decompile1MoveMToMem :: CType -> MemOperand -> [Int] -> DecompileRet
+decompile1MoveMToMem t ea regs = do
+  let temp = TVar t 1
+      base = operand2Addr ea (PTR t)
+      rs = zip [0 ..] regs
+  temp $= base
+  mapM_
+    (\(i, n) -> do
+       let val = rnVal t n
+       (VarValue temp $@# i) $= val)
+    rs
+
+decompile1MoveMPop :: CType -> [Int] -> DecompileRet
+decompile1MoveMPop t =
+  mapM_
+    (\x -> do
+       let top = SVar t 0
+       rnVar t x $=^ Deref (VarValue top)
+       top $+= Const int32 (sizeOfS t))
+
+decompile1MoveMIncr :: CType -> Int -> [Int] -> Int -> DecompileRet
+decompile1MoveMIncr t sz regs an = do
+  let base = anVar t an
+      regsR = zip [0 ..] regs
+      len = length regs
+      temp = TVar t 1
+  temp $=^ base
+  mapM_ (\(i, n) -> rnVar t n $=^ (VarValue temp $@# i)) regsR
+  base $= (VarValue temp $+# (len * sz))
+
+decompile1MoveMFromMem :: CType -> MemOperand -> [Int] -> DecompileRet
+decompile1MoveMFromMem t ea regs = do
+  let rs = zip [0 ..] regs
+      temp = TVar t 1
+      base = operand2Addr ea (PTR t)
+  temp $= base
+  mapM_ (\(i, n) -> rnVar t n $=^ (VarValue temp $@# i)) rs
+
+decompileMulL :: CType -> Operand -> Int -> DecompileRet
+decompileMulL t ea dr = do
+  let src = operand2Value ea t
+      dst = dnVar t dr
+      dstV = VarValue dst
+      (h, l) = Cast t dstV $** Cast t src
+  ccVar 'V' $= cast BOOL h
+  ccVar 'C' $=immF
+  dst $= l
+  defaultNZ dstV
+
+decompileMulLL :: CType -> Operand -> Int -> Int -> DecompileRet
+decompileMulLL t ea dh dl = do
+  let src = operand2Value ea t
+      dstH = dnVar t dh
+      dstL = dnVar t dl
+      zero = Const t 0
+      oldL = VarValue dstL
+      (h, l) = Cast t oldL $** Cast t src
+      retH = VarValue dstH
+      retL = VarValue dstL
+  dstH $= h
+  dstL $= l
+  ccVar 'V' $=immF
+  ccVar 'C' $=immF
+  ccVar 'Z' $= (retH $== zero) $&& (retL $== zero)
+  ccVar 'N' $= isNegative retH
+  ccVar 'S' $= Const BOOL (-1)
+
+decompileDivL :: CType -> Operand -> Int -> Int -> DecompileRet
+decompileDivL t ea dr dq = do
+  let src = operand2Value ea t
+      dstR = dnVar t dr
+      dstQ = dnVar t dq
+      qv = VarValue dstQ
+      tmp = TVar t 1
+  ccVar 'V' $=immF
+  ccVar 'C' $=immF
+  tmp $= qv
+  dstQ $/= src
+  when (dr /= dq) $ dstR $= VarValue tmp $% src
+  defaultNZ qv
+
+decompileDivLL :: CType -> Operand -> Int -> Int -> DecompileRet
+decompileDivLL t ea dr dq = do
+  let src = operand2Value ea t
+      dstR = dnVar t dr
+      dstQ = dnVar t dq
+      rv = VarValue dstR
+      qv = VarValue dstQ
+      tmpH = TVar t 1
+      tmpL = TVar t 2
+  tmpH $= rv
+  tmpL $= qv
+  let lval = Expr2 (VarValue tmpH) (VarValue tmpL)
+  dstR $= lval $% src
+  dstQ $= lval $/ src
+  ccVar 'V' $= lval $/! src
+  ccVar 'C' $= immF
+  defaultNZ qv
+-}

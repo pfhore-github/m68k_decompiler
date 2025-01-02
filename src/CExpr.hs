@@ -1,6 +1,8 @@
 {-# OPTIONS_GHC -Wno-incomplete-patterns #-}
 {-# OPTIONS_GHC -Wno-incomplete-uni-patterns #-}
 {-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE InstanceSigs              #-}
+{-# LANGUAGE TupleSections             #-}
 
 module CExpr where
 
@@ -8,7 +10,7 @@ import           CType
 import           Data.Bits
 import           Text.Printf
 import           Util
-
+import Control.Monad.State
 data Expr
   = Const CType Int
   | Arg CType String -- dummy
@@ -20,7 +22,54 @@ data Expr
   | Op2 Expr String Expr -- v1 op v2
   | CondExpr Expr Expr Expr -- c ? v1 : v2
   | Expr2 Expr Expr
-  deriving (Show, Eq)
+  deriving (Eq)
+
+data StateV c a
+  = Known a
+  | FromEnv (State c a)
+
+runStateV :: StateV b a -> b -> (a, b)
+runStateV (Known a) e   = (a, e)
+runStateV (FromEnv s) e = runState s e
+
+instance Functor (StateV c) where
+  fmap f (Known a)   = Known (f a)
+  fmap f (FromEnv e) = FromEnv (f <$> e)
+  
+instance Applicative (StateV c) where
+  pure = Known
+  (Known f) <*> (Known a) = Known (f a)
+  (FromEnv f) <*> (Known a) =
+    FromEnv
+      (do f' <- f
+          return $ f' a)
+  (Known f) <*> (FromEnv e) = FromEnv (f <$> e)
+  (FromEnv f) <*> (FromEnv a) =
+    FromEnv
+      (do f' <- f
+          f' <$> a)
+  (Known _) *> (Known b) = Known b
+  (FromEnv a) *> (Known b) =
+    FromEnv
+      (do _ <- a
+          return b)
+  (Known _) *> (FromEnv b) = FromEnv b
+  (FromEnv a) *> (FromEnv b) =
+    FromEnv
+      (do _ <- a
+          b)
+
+instance Monad (StateV c) where
+  (>>=) :: StateV c a -> (a -> StateV c b) -> StateV c b
+  (Known a) >>= f = f a
+  (FromEnv a) >>= f =
+    let e2 = do
+          a' <- a
+          let c = f a'
+          case c of
+            Known c'   -> state (c', )
+            FromEnv c' -> c'
+     in FromEnv e2
 
 typeOf :: Expr -> CType
 typeOf (Const t _) = t
@@ -50,14 +99,14 @@ data Var
   = EnvVar CType String -- reg var
   | GVar CType String -- Global
   | TVar CType Int -- temporaly for C
-  | SVar CType Int -- Stack variable
+  | SVar CType Int -- SP relative variable
   | Deref Expr -- *var
   | Member CType Var Int -- var.member
   | PMember CType Expr Int -- ptr->member
   | BitField CType Var Int Int -- var.member_m (bit field)
   | BitFieldX CType Var Expr Expr -- (non-supported)
   | Index CType Expr Expr -- var[index]
-  deriving (Show, Eq)
+  deriving (Eq)
 
 typeofV :: Var -> CType
 typeofV (EnvVar t _) = t
@@ -349,6 +398,8 @@ x $- y                                    = Op2 x "-" y
 ($/!) :: Expr -> Expr -> Expr
 ($/!) x = Op2 x "/V"
 
+
+
 op2 :: String -> Expr -> Expr -> Expr
 op2 "==" x y = x $== y
 op2 "!=" x y = x $!= y
@@ -378,7 +429,6 @@ deref x =
 addrOf :: Var -> Expr
 addrOf (Deref x)     = x
 addrOf x             = VarAddr x
-{-
 instance Show Expr where
   show (Arg _ v) = v
   show (VarValue v) = show v
@@ -436,7 +486,6 @@ instance Show Expr where
      in printf "%s %s %s" v1s o1 v2s
   show (CondExpr c v1 v2) = printf "%s ? %s : %s" (show c) (show v1) (show v2)
   show (Expr2 v1 v2) = printf "(%s, %s)" (show v1) (show v2)
-
 instance Show Var where
   show (EnvVar _ s) = s
   show (GVar _ v) = v
@@ -449,4 +498,3 @@ instance Show Var where
   show (BitFieldX _ v o s) =
     printf "getBit(%v,%v,%v)" (show v) (show o) (show s)
   show (Index t v i) = printf "((%v*)%v)[%v]" t (show v) (show i)
--}

@@ -1,17 +1,17 @@
 module Env where
 
-import {-# SOURCE #-} CExpr
 import {-# SOURCE #-} CStmt
 import           CType
+import           CExpr (Expr, Var, StateV)
+import Control.Monad.State
 
 class Env a where
-  readReg :: CType -> String -> StateV a Expr
-  writeReg :: String -> Expr -> StateV a ()
+  readReg :: CType -> String -> State a Expr
+  writeReg :: String -> Expr -> State a ()
+  readStack :: CType -> Int -> State a Expr
   getSP :: a -> Int
-  getSPM :: StateV a Int
-  modifySP :: (Int -> Int) -> StateV a ()
-  newStmt :: Stmt a -> StateV a ()
-  dumpStmt :: StateV a [Stmt a]
-  newVar :: CType -> StateV a Var
-  saveReg :: StateV a [Stmt a]
+  getSPM :: State a Int
+  modifySP :: (Int -> Int) -> State a ()
+  newVar :: CType -> State a Var
+  saveReg :: StateV a [CStmt]
   
