@@ -4,7 +4,7 @@ import           Data.Word
 import           Test.QuickCheck           (Gen, Property, Testable, chooseInt,
                                             forAll, elements)
 import           Data.Bits
-import CType
+import AST.CType
 
 
 
@@ -18,7 +18,7 @@ intListToByteList :: [Int] -> [Word8]
 intListToByteList x = map fromIntegral $ concatMap word2Byte x
 
 itypes :: [CType]
-itypes = [int8, int16, int32, uint8, uint16, uint32]
+itypes = [INT8, INT16, INT32, UINT8, UINT16, UINT32]
 
 
 immXTest :: (Testable a) => Int -> (Int -> a) -> Property

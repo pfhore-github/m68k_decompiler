@@ -5,12 +5,13 @@ import System.Environment (getArgs)
 import Data.Binary.Get ()
 import Data.Word
 import Numeric
+import M68k.Opcode
 
-disasm :: Int -> Int -> [Word8] -> [(Int, Op)]
+disasm :: Int -> Int -> [Word8] -> [(Int, Op, Int)]
 disasm from to ops
   | from < to =
-    let (pc, (o, next)) = parseOp from ops
-    in (pc, o) : disasm next to ops
+    let x@(_, _, next) = parseOp from ops
+    in x : disasm next to ops
   | otherwise = []
 
 main :: IO ()

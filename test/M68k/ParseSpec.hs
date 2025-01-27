@@ -8,6 +8,9 @@ import           Control.Monad.Trans.Maybe
 import           Data.Bits
 import           Data.Maybe
 import           M68k.Parse
+import M68k.Operand
+import M68k.Opcode
+import M68k.Common
 import Test.Hspec
     ( describe, it, shouldBe, Spec, SpecWith, Expectation )
 import           Test.Hspec.QuickCheck
@@ -30,18 +33,18 @@ testEA = do
     let testEaForReg regT other result =
           regTest $ \x ->
             parseOps regT x nothingT other `shouldBe` Just (result x)
-    prop "DN" $ testEaForReg 0 [] DR
-    prop "AN" $ testEaForReg 1 [] AR
-    prop "(AN)" $ testEaForReg 2 [] $ Address . UnRefAR
-    prop "(AN)+" $ testEaForReg 3 [] $ Address . UnRefInc
-    prop "-(AN)" $ testEaForReg 4 [] $ Address . UnRefDec
+    prop "DN" $ testEaForReg 0 [] (DReg . DR)
+    prop "AN" $ testEaForReg 1 [] (AReg . AR)
+    prop "(AN)" $ testEaForReg 2 [] $ Address . UnRefAR . AR
+    prop "(AN)+" $ testEaForReg 3 [] $ Address . UnRefInc . AR
+    prop "-(AN)" $ testEaForReg 4 [] $ Address . UnRefDec . AR
     prop "(d, AN)" $
       imm16Test $ \d ->
-        testEaForReg 5 [d] $ Address . Offset16 (toS16 d) . BaseAR
+        testEaForReg 5 [d] $ Address . Offset16 (toS16 d) . BaseAR . AR
     prop "extra-An" $
       imm8Test $ \d ->
         testEaForReg 6 [d] $ \x ->
-          Address $ Offset8 (toS8 d) (BaseAR x) False 0 0
+          Address $ Offset8 (toS8 d) (BaseAR $ AR x) False 0 0
     prop "(imm16)" $
       imm16Test $ \x ->
         parseOps 7 0 nothingT [x] `shouldBe` (Just . Address $ ImmAddr x)
@@ -69,8 +72,8 @@ testEA = do
             rnTest $ \ri ->
               forAll (elements [False, True]) $ \w ->
                 forAll (chooseInt (0, 3)) $ \cc ->
-                  parseOpsX (toExtWord extw ri w cc) (BaseAR an) bdList `shouldBe`
-                  Just (f (BaseAR an) w ri cc)
+                  parseOpsX (toExtWord extw ri w cc) (BaseAR $ AR an) bdList `shouldBe`
+                  Just (f (BaseAR $ AR an) w ri cc)
     prop "(d, An, Ri.w << c)" $
       forAll (chooseInt (1, 127)) $ \d -> textExtW (Offset8 d) d []
     prop "ILLEGAL#1(bdSize=0)" $

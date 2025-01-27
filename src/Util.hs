@@ -1,5 +1,6 @@
 module Util where
 import Data.Bits
+
 between :: Ord a => a -> a -> a -> Bool
 between a b x = (a <= x) && (x <= b)
 betweenX :: Ord a => a -> a -> a -> Bool

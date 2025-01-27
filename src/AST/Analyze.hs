@@ -1,9 +1,8 @@
 {-# LANGUAGE LambdaCase #-}
 
-module Analyze where
+module AST.Analyze where
 
-import           CExpr()
-import           CStmt()
+
 import           Data.Maybe
 
 import           Env

@@ -1,31 +1,18 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use tuple-section" #-}
-module M68k.Env
-  ( MEnv(MEnv, v_dr, v_ar, v_cc, v_sp, v_savedSp)
-  , readDn
-  , readAn
-  , readCC
-  , writeDn
-  , writeAn
-  , writeCC
-  , clearCcS
-  , pushValue
-  , getStackValue
-  , StateV(Known, FromEnv)
-  , emptyEnv
-  ) where
+module M68k.Env where
 
-import           CExpr
-import           CType
+import           AST.CType
+import           AST.Common
 import           Control.Monad.State
 import           Data.Char
 import qualified Data.Map.Strict     as M
 import qualified Data.Vector         as V
 import qualified Data.Vector.Mutable as MV
-import           Env
-import Data.Maybe (mapMaybe)
-import CStmt
+import Data.Maybe
+import M68k.ConvToRtl (falseV)
+import AST.Expr
 
 data MEnv =
   MEnv
@@ -34,7 +21,7 @@ data MEnv =
     , v_cc    :: M.Map Char Expr
     , v_stack :: M.Map Int Expr
     , v_sp    :: Int
-    , v_vars :: [Var]
+    , v_vars :: M.Map String Expr
     , v_savedSp :: [Int]
     } 
 
@@ -42,41 +29,239 @@ emptyEnv :: MEnv
 emptyEnv = MEnv {
   v_dr = V.replicate 8 Nothing,
   v_ar = V.replicate 8 Nothing,
-  v_cc = M.fromList [('C', immF), ('V', immF), ('Z', immF), ('N', immF), ('X', immF), ('I', Const int8 0)],
+  v_cc = M.fromList [('C', falseV), ('V', falseV), ('Z', falseV), ('N', falseV), ('X', falseV), ('I', uintE 0)],
   v_stack = M.empty,
   v_sp = 0,
-  v_vars = [],
+  v_vars = M.empty,
   v_savedSp = []
 }
 
-
-
-readDn_ :: Int -> State MEnv (Maybe Expr)
-readDn_ n = do
+readDn :: Char -> State MEnv (Maybe Expr)
+readDn n = do
   e <- get
-  return $ v_dr e V.! n
+  return $ v_dr e V.! (digitToInt n) 
 
-readAn_ :: Int -> State MEnv (Maybe Expr)
-readAn_ n = do
+readAn :: Char -> State MEnv (Maybe Expr)
+readAn n = do
   e <- get
-  return $ v_ar e V.! n
+  return $ v_ar e V.! (digitToInt n) 
 
-readCC_ :: Char -> State MEnv (Maybe Expr)
-readCC_ c = do
+readCC :: Char -> State MEnv (Maybe Expr)
+readCC c = do
   e <- get
   return $ v_cc e M.!? c
 
-writeDn_ :: Int -> Expr -> State MEnv ()
-writeDn_ n v = do
-  modify $ \e -> e {v_dr = V.modify (\x -> MV.write x n $ Just v) (v_dr e)}
+readCCX :: Char -> State MEnv (Expr)
+readCCX c = do
+  v <- readCC c 
+  return $ fromMaybe (ExprVar $ RtlReg BOOL [c]) v
+writeDn :: Char -> Expr -> State MEnv ()
+writeDn n v = do
+  modify $ \e -> e {v_dr = V.modify (\x -> MV.write x (digitToInt n) $ Just v) (v_dr e)}
 
-writeAn_ :: Int -> Expr -> State MEnv ()
-writeAn_ n v = do
-   modify $ \e -> e {v_ar = V.modify (\x -> MV.write x n $ Just v) (v_ar e)}
+writeAn :: Char -> Expr -> State MEnv ()
+writeAn n v = do
+   modify $ \e -> e {v_ar = V.modify (\x -> MV.write x (digitToInt n) $ Just v) (v_ar e)}
 
-writeCC_ :: Char -> Expr -> State MEnv ()
-writeCC_ c v = do
+writeCC :: Char -> Expr -> State MEnv ()
+writeCC c v = do
   modify $ \e -> e {v_cc = M.insert c v (v_cc e)}
+
+-- update register
+writeVar :: Var -> Expr -> State MEnv ()
+writeVar s@(RtlReg t ('D':dn:[])) v  
+  | sizeOf t == 4 = writeDn dn v
+  | sizeOf t == 2 = do 
+    v' <- readDn dn
+    writeDn dn (
+      case v' of
+        Just (ExprJoin a _) -> (ExprJoin a v) 
+        Nothing -> ((ExprVar s) $& uintE 0xFFFF0000) $| v
+        _ -> (v $& uintE 0xFFFF0000) $| v
+      )
+  | sizeOf t == 1 = do 
+    v' <- readDn dn
+    writeDn dn (
+      case v' of
+          Just (ExprJoin a (ExprJoin b _)) -> (ExprJoin a (ExprJoin b v)) 
+          Nothing -> ((ExprVar s) $& uintE 0xFFFFFF00) $| v
+          _ -> (v $& uintE 0xFFFFFF00) $| v
+      )
+writeVar (RtlReg t ('A':an:[])) v 
+  | sizeOf t == 4 = writeAn an v
+  | sizeOf t == 2 = do 
+    let v' = cast INT32 v
+    writeAn an v'
+writeVar (RtlReg BOOL (c:[])) v = do
+  writeCC c $ cast BOOL v
+writeVar (RtlReg _ s) v = do
+  modify $ \e -> e {v_vars = M.insert s v (v_vars e)}
+writeVar _ _ = do return ()
+
+
+-- TODO
+eval :: Expr -> State MEnv (Expr)
+eval (ExprVar v) = do
+  val <- readVar v
+  return val 
+eval (ExprCast t v) = do
+  val <- eval v
+  return $ if t == typeOfE v then val else ExprCast t val
+eval (ExprOp1 op v) = do
+  val <- eval v
+  return $ evalE (ExprOp1 op val)
+eval (ExprOp2 op v1 v2) = do
+  val1 <- eval v1
+  val2 <- eval v2
+  return $ evalE (ExprOp2 op val1 val2)
+eval (ExprOpN t s vs) = do
+  vals <- mapM (do return . evalE) vs
+  return $ evalE (ExprOpN t s vals)
+eval (ExprSel cond t f) = do
+  cond' <- eval cond
+  t' <- eval t
+  f' <- eval f
+  return $ evalE (ExprSel cond' t' f')
+eval (ExprCondCC 0) = do
+  return $ ExprBool True
+eval (ExprCondCC 1) = do
+  return $ ExprBool False
+eval (ExprCondCC 2) = do
+  c <- readCCX 'C'
+  z <- readCCX 'Z'
+  case c of 
+    (ExprOp2 AST.Common.SUBC a b) -> return $ a $> b
+    (ExprOp2 AST.Common.ADDC a b) -> return $ a $> (neg b)
+    _ -> return $ (lNot c) $&& (lNot z)
+eval (ExprCondCC 3) = do
+  c <- readCCX 'C'
+  z <- readCCX 'Z'
+  case c of 
+    (ExprOp2 AST.Common.SUBC a b) -> return $ a $<= b
+    (ExprOp2 AST.Common.ADDC a b) -> return $ a $<= (neg b)
+    _ -> return $ c $|| z
+eval (ExprCondCC 4) = do
+  c <- readCCX 'C'
+  case c of 
+    (ExprOp2 AST.Common.SUBC a b) -> return $ a $>= b
+    (ExprOp2 AST.Common.ADDC a b) -> return $ a $>= (neg b)
+    _ -> return $ (lNot c)
+eval (ExprCondCC 5) = do
+  c <- readCCX 'C'
+  case c of 
+    (ExprOp2 AST.Common.SUBC a b) -> return $ a $< b
+    (ExprOp2 AST.Common.ADDC a b) -> return $ a $< (neg b)
+    _ -> return $ c
+eval (ExprCondCC 6) = do
+  z <- readCCX 'Z'
+  return $ (lNot z)
+eval (ExprCondCC 7) = do
+  z <- readCCX 'Z'
+  return z
+eval (ExprCondCC 8) = do
+  v <- readCCX 'V'
+  return $ (lNot v)
+eval (ExprCondCC 9) = do
+  v <- readCCX 'V'
+  return v
+eval (ExprCondCC 10) = do
+  n <- readCCX 'N'
+  return $ (lNot n)
+eval (ExprCondCC 11) = do
+  n <- readCCX 'N'
+  return n
+eval (ExprCondCC 12) = do
+  v <- readCCX 'V'
+  case v of 
+    (ExprOp2 AST.Common.SUBV a b) -> return $ a $>= b
+    (ExprOp2 AST.Common.ADDV a b) -> return $ a $>= (neg b)
+    _ -> do
+            n <- readCCX 'N'
+            return $ (v $== n)
+eval (ExprCondCC 13) = do
+  v <- readCCX 'V'
+  case v of 
+    (ExprOp2 AST.Common.SUBV a b) -> return $ a $< b
+    (ExprOp2 AST.Common.ADDV a b) -> return $ a $< (neg b)
+    _ -> do 
+        n <- readCCX 'N'
+        return $ (v $!= n)
+eval (ExprCondCC 14) = do
+  v <- readCCX 'V'
+  case v of 
+    (ExprOp2 AST.Common.SUBV a b) -> return $ a $> b
+    (ExprOp2 AST.Common.ADDV a b) -> return $ a $> (neg b)
+    _ -> do 
+        n <- readCCX 'N'
+        z <- readCCX 'Z'
+        return $ (v $== n) $&& (lNot z)
+eval (ExprCondCC 15) = do
+  v <- readCCX 'V'
+  case v of 
+    (ExprOp2 AST.Common.SUBV a b) -> return $ a $<= b
+    (ExprOp2 AST.Common.ADDV a b) -> return $ a $<= (neg b)
+    _ -> do 
+        n <- readCCX 'N'
+        z <- readCCX 'Z'
+        return $ z $|| (v $!= n)
+
+
+-- right hand is bit offset 
+
+eval e = do return e
+
+readVar :: Var -> State MEnv (Expr)
+readVar c@(RtlReg t ('D':dn:[])) = do 
+  v <- readDn dn
+  return $ cast t $ fromMaybe (ExprVar c) v
+readVar c@(RtlReg t ('A':dn:[])) = do 
+  v <- readAn dn
+  return $ cast t $ fromMaybe (ExprVar c) v
+readVar v@(RtlReg BOOL (c:[])) = fromMaybe (ExprVar v) <$> readCC c
+readVar v@(RtlReg _ s) = do 
+  e <- get
+  return $ fromMaybe (ExprVar v) $ (v_vars e) M.!? s
+readVar (RtlInc t v) = do
+  e <- readVar v
+  let inc = case typeOfE e of
+              (PTR t') -> sizeOf t'
+              _ -> 1                   
+  writeVar v (e $+ intE inc)
+  return $ if t then (e $+ intE inc) else e
+readVar (RtlDec t v) = do
+    e <- readVar v
+    let inc = case typeOfE e of
+                (PTR t') -> sizeOf t'
+                _ -> 1                   
+    writeVar v (e $- intE inc)
+    return $ if t then (e $- intE inc) else e
+readVar (RtlMemory v) = do
+    v' <- eval v
+    return $ ExprVar $ deref v'
+readVar (RtlMemoryI t v o) = do
+    v' <- eval v
+    return $ ExprVar $ RtlMemoryI t v' o
+readVar (RtlMemoryD t v i) = do
+    v' <- eval v
+    i' <- eval i
+    return $ ExprVar $ RtlMemoryD t v' i'
+readVar (VarCast t v) = do
+    val <- readVar v
+    return $ if (typeOfE val) == t then 
+      val
+    else 
+      cast t val
+readVar x = do
+      return $ ExprVar x
+{- 
+
+
+
+
+
+
+
+
 
 
 instance Env MEnv where
@@ -244,3 +429,4 @@ writeCC c = writeReg ['C',c]
 clearCcS :: State MEnv ()
 clearCcS = do 
   modify (\e -> e {v_cc = M.delete 'S' (v_cc e)})
+-} 
