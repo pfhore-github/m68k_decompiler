@@ -28,7 +28,7 @@ library
 
   -- cabal-fmt: expand src
   exposed-modules:
-    Env
+    AST.Env
     M68k.Common
     M68k.Operand
     M68k.Opcode
@@ -37,7 +37,7 @@ library
     M68k.Env
     M68k.LongDouble
     M68k.Parse
-    M68k.ConvToRtl
+    M68k.ConvToAst
     Util
     AST.Analyze
     AST.CType
@@ -61,3 +61,24 @@ executable m68k-disassembler
 
   hs-source-dirs: app
 
+Test-Suite Parse
+    main-is:    HSpecMain.hs
+    hs-source-dirs:   test
+    default-language: Haskell2010
+
+  build-depends:
+    , base             
+    , QuickCheck
+    , hspec
+    , m68k-decompiler
+    , mtl
+    , operational
+    , transformers
+    , vector
+
+  other-modules:
+    M68k.ConvToAstSpec
+    M68k.ParseSpec
+    M68k.OperandSpec
+    UtilSpec
+    TestCommon

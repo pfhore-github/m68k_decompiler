@@ -38,5 +38,4 @@ showOp ops =
            else "\t") ++ show op
       
    in unlines $ map showOp1 ops
-  where
-    
+

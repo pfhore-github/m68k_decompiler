@@ -1,14 +1,33 @@
-{-# LANGUAGE LambdaCase #-}
-
 module AST.Analyze where
 
 
-import           Data.Maybe
+import           AST.Env
+import AST.Common 
+import Control.Monad.State
+doAst1 :: (Env a) => Stmt -> State a Stmt
+doAst1 (StmtAssign var@(EnvVar _ _) e) = do
+  e' <- evalValue e
+  setValue var e'
+  return StmtEmpty
+doAst1 (StmtAssign var e) = do
+  e' <- evalValue e
+  return (StmtAssign var e')
+doAst1 (StmtAssignOp op var@(EnvVar _ _) e) = do
+  varV <- getValue var
+  e' <- evalValue e
+  setValue var (ExprOp2 op varV e')
+  return StmtEmpty
+doAst1 (StmtAssignOp op var e) = do
+  e' <- evalValue e
+  return (StmtAssignOp op var e')
+doAst1 x = return x
 
-import           Env
-
-
-
+doAst :: (Env a) => a -> [Stmt] -> (a, [Stmt])
+doAst env (ast1:others) = 
+  let (re, env') = runState (doAst1 ast1) env
+      (env'', re') = doAst env' others
+  in (env'', re : re')
+doAst env [] = (env, [])
 {-
 constructFlow inBlockOps allOps =
   let getBlockIn f = [ c | c <- allOps, f $ fst c ]

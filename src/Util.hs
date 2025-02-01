@@ -52,3 +52,5 @@ getBit v pos mask
 bool2Bit :: Num a => Bool -> a
 bool2Bit True = 1
 bool2Bit False = 0
+
+

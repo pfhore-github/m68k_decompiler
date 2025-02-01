@@ -14,7 +14,8 @@ instance Show AType where
 instance PrintfArg AType where
   formatArg = formatArg . show 
 data AFType
-  = FInt AType
+  = 
+  FInt AType
   | FSINGLE
   | FDOUBLE
   | FEXT

@@ -1,8 +1,8 @@
-import           M68k.ConvToRtlSpec (testRtlEA)
+import           M68k.ConvToAstSpec ()
 import           M68k.ParseSpec
 import           Test.Hspec
 import           UtilSpec
-
+import M68k.OperandSpec
 -- import CExprSpec
 main :: IO ()
 main =
@@ -10,4 +10,5 @@ main =
     testUtil
     testEA
     testDecode
-    testRtlEA
+    testOperand
+--    testRtlEA

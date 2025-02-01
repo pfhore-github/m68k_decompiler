@@ -2,17 +2,21 @@ module M68k.Opcode
   ( Op(..)
   , BopSc(..)
   ) where
+
 import           M68k.Common
 
+import           Data.List    (intercalate)
 import           M68k.Operand
-import Text.Printf ( printf, PrintfArg(formatArg) )
-import Data.List(intercalate)
+import           Text.Printf  (PrintfArg (formatArg), printf)
+
 data BopSc
   = BImm Int
   | BReg DR
   deriving (Eq)
+
 instance PrintfArg BopSc where
-  formatArg = formatArg . show 
+  formatArg = formatArg . show
+
 instance Show BopSc where
   show (BImm n)  = printf "#%d" n
   show (BReg dr) = show dr
@@ -141,11 +145,11 @@ data Op
   | BFEXTS Operand BopSc BopSc DR
   | BFFFO Operand BopSc BopSc DR
   | BFINS DR Operand BopSc BopSc
-  | FOp String AFType FpuOperand FPR
-  | FSINCOS AFType FpuOperand FPR FPR
-  | FTST AFType FpuOperand
+  | FOp String FpuOperand FPR
+  | FSINCOS FpuOperand FPR FPR
+  | FTST FpuOperand
   | FMOVECR Int FPR
-  | FMOVEStore AFType FPR FpuOperand
+  | FMOVEStore FPR FpuOperand
   | FMOVEStoreP FPR FpuOperand BopSc
   | FMOVECC Bool [String] MemOperand
   | FMOVEM_STATIC Bool MemOperand [FPR]
@@ -176,7 +180,7 @@ data Op
 toRegList :: (Reg a) => (a, a) -> [a] -> [(a, a)]
 toRegList c [] = [c]
 toRegList (n1, n2) (s:os) =
-  if abs ((reg_num n2) - (reg_num s)) == 1
+  if abs (reg_num n2 - reg_num s) == 1
     then toRegList (n1, s) os
     else (n1, n2) : toRegList (s, s) os
 
@@ -197,7 +201,6 @@ showImm False _ v   = printf "#%d" v
 showImm True BYTE v = printf "#0x%02x" v
 showImm True WORD v = printf "#0x%04x" v
 showImm True LONG v = printf "#0x%08x" v
-
 
 instance Show Op where
   show (ORI t o v) = printf "ori.%s %s, %s" t (showImm True t v) o
@@ -247,14 +250,14 @@ instance Show Op where
   show (TRAPn n) = printf "trap #%d" n
   show (LINK an disp) = printf "link %v, #%d" an disp
   show (UNLK an) = printf "unlk %v" an
-  show (RESET) = "reset"
-  show (NOP) = "nop"
+  show RESET = "reset"
+  show NOP = "nop"
   show (STOP n) = printf "stop #%04x" n
-  show (RTE) = "rtr"
+  show RTE = "rtr"
   show (RTD n) = printf "rtd #%d" n
-  show (RTS) = "rts"
-  show (TRAPV) = "trapv"
-  show (RTR) = "rtr"
+  show RTS = "rts"
+  show TRAPV = "trapv"
+  show RTR = "rtr"
   show (BKPT n) = printf "bkpt #%d" n
   show (PEA o) = printf "pea %v" o
   show (EXT t v) = printf "ext.%v %v" t v
@@ -264,7 +267,7 @@ instance Show Op where
           toRegStr
             (case o of
                (UnRefDec _) -> reverse rs
-               (_)          -> rs)
+               _            -> rs)
      in if toMem
           then printf "movem.%v %v, %v" t regStr o
           else printf "movem.%v %v, %v" t o regStr
@@ -342,9 +345,9 @@ instance Show Op where
   show (BFEXTS o l w d) = printf "bfexts %v{%v,%v}, %v" o l w d
   show (BFFFO o l w d) = printf "bfffo %v{%v,%v}, %v" o l w d
   show (BFINS d o l w) = printf "bfins %v, %v{%v,%v}" d o l w
-  show (FOp s at e dn) = printf "%s.%v %v, %v" s at e dn
+  show (FOp s e dn) = printf "%s.x %v, %v" s (typeOfO e) e dn
   show (FMOVECR s t) = printf "fmovecr #%x, %v" s t
-  show (FMOVEStore at n o) = printf "fmove.%v %v, %v" at n o
+  show (FMOVEStore n o) = printf "fmove.%v %v, %v" (typeOfO o) n o
   show (FMOVEStoreP n o k) = printf "fmove.p %v, %v{%v}" n o k
   show (FMOVECC False s o) = printf "fmovecc %v, %s" o (intercalate "," s)
   show (FMOVECC True s o) = printf "fmovecc %s, %v" (intercalate "," s) o
@@ -353,7 +356,7 @@ instance Show Op where
           toRegStr
             (case m of
                (UnRefDec _) -> reverse regs
-               (_)          -> regs)
+               _            -> regs)
      in if toMem
           then printf "fmovem.x %s, %v" regStr m
           else printf "fmovem.x %v, %s" m regStr
@@ -363,7 +366,7 @@ instance Show Op where
   show (FTRAPcc cc 0) = printf "ftrap%v" cc
   show (FTRAPcc cc d) = printf "ftrap%v #%x" cc d
   show (FDBcc cc dn target) = printf "fdb%v %v _%05X" cc dn target
-  show (FNOP) = "fnop"
+  show FNOP = "fnop"
   show (FBcc cc target) = printf "fb%v _%05X" cc target
   show (FSAVE o) = printf "fsave %v" o
   show (FRESTORE o) = printf "frestore %v" o
@@ -375,8 +378,8 @@ instance Show Op where
   show (CPUSHA s) = printf "cpusha %s" s
   show (PFLUSHN an) = printf "pflushn (%v)" an
   show (PFLUSH an) = printf "pflushn (%v)" an
-  show (PFLUSHAN) = "pflushan"
-  show (PFLUSHA) = "pflusha"
+  show PFLUSHAN = "pflushan"
+  show PFLUSHA = "pflusha"
   show (PTESTW an) = printf "ptestw (%v)" an
   show (PTESTR an) = printf "ptestr (%v)" an
   show (MOVE16 True t ay imm) =

@@ -1,10 +1,9 @@
-{-# LANGUAGE InstanceSigs       #-}
-{-# LANGUAGE StandaloneDeriving #-}
-
+{-# LANGUAGE InstanceSigs #-}
 module M68k.Operand where
 
 import           M68k.LongDouble
 import           Text.Printf
+import M68k.Common (AType, AFType)
 
 class Reg a where
   reg_num :: a -> Int
@@ -30,7 +29,7 @@ newtype FCC =
   deriving (Eq)
 
 instance Show DR where
-  show (DR n) = "%d" ++ (show n)
+  show (DR n) = "%d" ++ show n
 
 instance PrintfArg DR where
   formatArg = formatArg . show
@@ -41,7 +40,7 @@ instance Reg DR where
 instance Show AR where
   show (AR 7) = "%sp"
   show (AR 6) = "%fp"
-  show (AR n) = "%a" ++ (show n)
+  show (AR n) = "%a" ++ show n
 
 instance PrintfArg AR where
   formatArg = formatArg . show
@@ -50,7 +49,7 @@ instance Reg AR where
   reg_num (AR n) = n + 8
 
 instance Show FPR where
-  show (FPR n) = "%fp" ++ (show n)
+  show (FPR n) = "%fp" ++ show n
 
 instance PrintfArg FPR where
   formatArg = formatArg . show
@@ -145,7 +144,6 @@ data AddrBase
   | BaseNone
   deriving (Eq)
 
-
 data Operand
   = DReg DR
   | AReg AR
@@ -186,9 +184,9 @@ toScale idx w d
   | otherwise = printf "%v%s << %d" idx ex d
   where
     ex =
-      (if w
-         then ".w"
-         else "")
+      if w
+        then ".w"
+        else ""
 
 indexStr :: Bool -> Maybe XR -> Bool -> Int -> String
 indexStr _ Nothing _ _        = ""
@@ -198,7 +196,7 @@ indexStr False (Just rn) w cc = printf "%s, " $ toScale rn w cc
 base2Str :: Int -> AddrBase -> String
 base2Str d (BasePC pc) = printf "0x%05x" (d + pc) ++ ", %pc"
 base2Str d BaseNone    = printf "0x%05x" d
-base2Str d (BaseAR ar) = printf "0x%05x, %v" d ar
+base2Str d (BaseAR ar) = printf "%d, %v" d ar
 
 instance Show MemOperand where
   show (UnRefAR ar) = printf "(%v)" ar
@@ -220,16 +218,24 @@ instance PrintfArg MemOperand where
 
 data FpuOperand
   = FpuRn FPR
-  | FpuOperandInt Operand
-  | FpuOperandFlt MemOperand
-  | FpuImm LongDouble
+  | FpuOperandInt AType Operand
+  | FpuOperandFlt AFType MemOperand
+  | FpuImm AFType LongDouble
   deriving (Eq)
 
 instance Show FpuOperand where
+  show :: FpuOperand -> String
   show (FpuRn n)         = printf "%%fp%d" n
-  show (FpuOperandInt t) = show t
-  show (FpuOperandFlt t) = show t
-  show (FpuImm d)        = show d
+  show (FpuOperandInt _ t) = show t
+  show (FpuOperandFlt _ t) = show t
+  show (FpuImm _ d)        = show d
+
+typeOfO :: FpuOperand -> String
+typeOfO (FpuRn _)         = "x"
+typeOfO (FpuOperandInt t _) = show t
+typeOfO (FpuOperandFlt t _) = show t
+typeOfO (FpuImm t _)        = show t
+ 
 
 instance PrintfArg FpuOperand where
   formatArg = formatArg . show

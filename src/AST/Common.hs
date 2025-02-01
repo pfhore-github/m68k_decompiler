@@ -1,4 +1,3 @@
-{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE GADTs #-}
 module AST.Common where
@@ -7,6 +6,7 @@ import           AST.CType
 import {-# SOURCE #-} AST.Expr
 import Text.Printf (printf)
 import           Data.List
+import M68k.LongDouble
 
 
 
@@ -105,6 +105,7 @@ data Expr
   | ExprBool Bool -- true/false
   | ExprPtr CType Integer -- imm address
   | ExprInt Bool Integer -- integer imm
+  | ExprFlt LongDouble -- num imm
   | ExprCast CType Expr -- (CType)expr
   | ExprOp1 Op1 Expr -- (op1)exp
   | ExprOp2 Op2 Expr Expr -- a (op2) b
@@ -115,16 +116,18 @@ data Expr
   deriving (Eq)
 
 data Var
-  = RtlReg CType [Char] -- fixed register
-  | RtlInc Bool Var -- ++var(True) or var++(False)
-  | RtlDec Bool Var -- --var(True) or var--(False)
-  | RtlMemory Expr -- *var
-  | RtlMemoryI CType Expr Int -- var->offset
-  | RtlMemoryD CType Expr Expr -- var[index]
-  | RtlMemoryC CType Int -- ROM const
-  | RtlMemoryG CType Int -- lowmem global
+  = GlobalVar CType String -- affects outside world 
+  | EnvVar CType String -- only affects env
+  | TmpVar CType String -- only affects in scope
+  | VarInc Bool Var -- ++var(True) or var++(False)
+  | VarDec Bool Var -- --var(True) or var--(False)
+  | VarMemory Expr -- *var
+  | VarMember CType Expr Int -- var->offset
+  | VarArray CType Expr Expr -- var[index]
+  | VarROM CType Int -- ROM const
+  | VarRAM CType Int -- lowmem global
   | VarCast CType Var -- (type)var [left-value cast]
-  | RtlBitField CType Var Int Int -- (var >> offset) & (1<<size-1)
+  | VarBitField CType Var Int Int -- (var >> offset) & (1<<size-1)
   deriving (Eq)
 
 data JumpTarget
@@ -136,6 +139,7 @@ data Stmt =
   StmtAssign Var Expr -- (dst) = (src)
  | StmtAssignOp Op2 Var Expr -- (dst) (op2)= (src)
  | StmtIf Expr [Stmt] [Stmt] -- if( exp ) { stmt1;} 
+ | StmtWhile Expr [Stmt]  -- while( exp ) { stmt1;} 
  | StmtAsm [Char] [Expr]
  | StmtPush Expr
  | StmtPop Var
@@ -157,9 +161,10 @@ instance Show Expr where
   show (ExprPtr t v) = printf "(%v*)%08x" t v
   show (ExprInt True v) = printf "%d" v
   show (ExprInt False v) = printf "%xU" v
+  show (ExprFlt v) = show v
   show (ExprCast t v) = printf "(%v)%s" t $ show v
   show (ExprOp1 op1 v) = printf "%s (%s)" (show op1) (show v)
-  show (ExprOp2 op2 a b) = (show2 op2) a b
+  show (ExprOp2 op2 a b) = show2 op2 a b
   show (ExprOpN _ s as) = printf "%s(%s)" s $ intercalate "," $ map show as
   show (ExprSel e a b) = printf "(%s) ? (%s) : (%s)" (show e) (show a) (show b)
   show (ExprJoin a b) = printf "(%s, %s)" (show a) (show b)
@@ -169,28 +174,30 @@ instance Term Expr where
   getExpr e = e
 
 instance Show Var where
-  show (RtlReg (PTR VOID) s) = printf "%s" s
-  show (RtlReg (PTR p) s) = printf "(%v*)%s" p s
-  show (RtlReg INT8 s) = printf "%v.Bs" s
-  show (RtlReg UINT8 s) = printf "%v.B" s
-  show (RtlReg INT16 s) = printf "%v.Ws" s
-  show (RtlReg UINT16 s) = printf "%v.W" s
-  show (RtlReg INT32 s) = printf "%v.s" s
-  show (RtlReg UINT32 s) = printf "%v" s
-  show (RtlReg BOOL s) = printf "%v" s
-  show (RtlReg t s) = printf "%s_%v" s t
-  show (RtlInc True s) = printf "++(%s)" $ show s
-  show (RtlInc False s) = printf "(%s)++" $ show s
-  show (RtlDec True s) = printf "--(%s)" $ show s
-  show (RtlDec False s) = printf "(%s)--" $ show s
-  show (RtlMemory v) = printf "*(%s)" $ show v
-  show (RtlMemoryI (PTR VOID) v i) = printf "%s->_%d" (show v) i
-  show (RtlMemoryI t v i) = printf "reinterpret_cast<%v>(%s->_%d)" t (show v) i
-  show (RtlMemoryD t v o) = printf "reinterpret_cast<%v*>(%s)[%s]" t (show v) (show o)
-  show (RtlMemoryC t c) = printf "(const %v)C_%06x" t c
-  show (RtlMemoryG t c) = printf "(%v)G_%06x" t c
+  show (GlobalVar (PTR VOID) s) = printf "%s" s
+  show (GlobalVar (PTR p) s) = printf "(%v*)%s" p s
+  show (GlobalVar INT8 s) = printf "%v.Bs" s
+  show (GlobalVar UINT8 s) = printf "%v.B" s
+  show (GlobalVar INT16 s) = printf "%v.Ws" s
+  show (GlobalVar UINT16 s) = printf "%v.W" s
+  show (GlobalVar INT32 s) = printf "%v.s" s
+  show (GlobalVar UINT32 s) = printf "%v" s
+  show (GlobalVar BOOL s) = printf "%v" s
+  show (GlobalVar t s) = printf "%s_%v" s t
+  show (EnvVar t s) = show (GlobalVar t s)
+  show (TmpVar t s) = show (GlobalVar t s)
+  show (VarInc True s) = printf "++(%s)" $ show s
+  show (VarInc False s) = printf "(%s)++" $ show s
+  show (VarDec True s) = printf "--(%s)" $ show s
+  show (VarDec False s) = printf "(%s)--" $ show s
+  show (VarMemory v) = printf "*(%s)" $ show v
+  show (VarMember (PTR VOID) v i) = printf "%s->_%d" (show v) i
+  show (VarMember t v i) = printf "reinterpret_cast<%v>(%s->_%d)" t (show v) i
+  show (VarArray t v o) = printf "reinterpret_cast<%v*>(%s)[%s]" t (show v) (show o)
+  show (VarROM t c) = printf "(const %v)C_%06x" t c
+  show (VarRAM t c) = printf "(%v)G_%06x" t c
   show (VarCast t v) = printf "static_cast<%v>(%s)" t $ show v
-  show (RtlBitField _ v i s) = printf "%v._%d_%d" (show v) i (i+s)
+  show (VarBitField _ v i s) = printf "%v._%d_%d" (show v) i (i+s)
 
 opPrioity :: Num a => Op2 -> a
 opPrioity MUL = 3
@@ -218,11 +225,11 @@ instance Show Stmt where
   show (StmtAdjustSP n) = printf "adjust_sp(%d)" n
   show (StmtPush e) = printf "push (%s)" $ show e
   show (StmtPop v) = printf "pop %s" $ show v
-  show (StmtGoto (TargetAbsolute n)) = printf "goto _%06x" $ n
-  show (StmtGoto (TargetIndirect v)) = printf "goto (%s)" $ (show v)
-  show (StmtCall (TargetAbsolute n)) = printf "call _%06x" $ n
-  show (StmtCall (TargetIndirect v)) = printf "call (%s)" $ (show v)
-  show (StmtReturn) = "return"
+  show (StmtGoto (TargetAbsolute n)) = printf "goto _%06x" n
+  show (StmtGoto (TargetIndirect v)) = printf "goto (%s)" $ show v
+  show (StmtCall (TargetAbsolute n)) = printf "call _%06x" n
+  show (StmtCall (TargetIndirect v)) = printf "call (%s)" $ show v
+  show StmtReturn = "return"
   show (StmtIf cond ts []) =
     printf "if (%s) { %s }" (show cond) $ intercalate ";" $ map show ts
   show (StmtIf cond ts fs) =
@@ -231,10 +238,16 @@ instance Show Stmt where
       (show cond) 
       (intercalate ";" $ map show ts)
       (intercalate ";" $ map show fs)
+  show (StmtWhile cond ts) =
+    printf
+      "while (%s) { %s }"
+      (show cond) 
+      (intercalate ";" $ map show ts)
   show StmtEmpty = ";"
 
 instance Term Var where
-  getExpr e = ExprVar e
+  getExpr :: Var -> Expr
+  getExpr = ExprVar
 
 uintE :: (Integral a) => a -> Expr
 uintE i = ExprInt False $ fromIntegral i

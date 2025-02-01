@@ -6,7 +6,7 @@ import           Test.QuickCheck           (Gen, Property, Testable, chooseInt,
 import           Data.Bits
 import AST.CType
 
-
+import M68k.Operand
 
 word2Byte :: Int -> [Int]
 word2Byte v = [v `shiftR` 8, v .&. 0xff]
@@ -44,15 +44,6 @@ immS32Test = forAll $ chooseInt (-2147483648, 2147483647)
 iregs :: Gen Integer
 iregs = elements [0..7]
 
-regTest :: (Testable a) => (Int -> a) -> Property
-regTest = forAll (elements [0..7])
-
-regXTest :: (Testable a) => (Int -> a) -> Property
-regXTest = forAll (elements [0..6])
-
-rnTest :: (Testable a) => (Int -> a) -> Property
-rnTest = forAll (elements [0..15])
-
-ccTest :: (Testable a) => (Int -> a) -> Property
-ccTest = rnTest -- range is same as rnTest
+testFor :: (Testable a) => [Int] -> (Int -> a) -> Property
+testFor range f = forAll (elements range) $ \d -> f d
 

@@ -1,6 +1,7 @@
 {-# LANGUAGE GADTs #-}
 module AST.Common where
 import AST.CType
+import M68k.LongDouble
 data Op1
   = NOT -- ~ a
   | LNOT -- ! a
@@ -50,6 +51,7 @@ data Expr
   | ExprBool Bool -- true/false
   | ExprPtr CType Integer -- imm address
   | ExprInt Bool Integer -- integer imm
+  | ExprFlt LongDouble -- integer imm
   | ExprCast CType Expr -- (CType)expr
   | ExprOp1 Op1 Expr -- (op1)exp
   | ExprOp2 Op2 Expr Expr -- a (op2) b
@@ -59,16 +61,18 @@ data Expr
   | ExprCondCC Int -- use last cc
 
 data Var
-  = RtlReg CType [Char] -- fixed register
-  | RtlInc Bool Var -- ++var(True) or var++(False)
-  | RtlDec Bool Var -- --var(True) or var--(False)
-  | RtlMemory Expr -- *var
-  | RtlMemoryI CType Expr Int -- var->offset
-  | RtlMemoryD CType Expr Expr -- var[index]
-  | RtlMemoryC CType Int -- ROM const
-  | RtlMemoryG CType Int -- lowmem global
+  = GlobalVar CType String -- affects outside world 
+  | EnvVar CType String -- only affects env
+  | TmpVar CType String -- only affects in scope
+  | VarInc Bool Var -- ++var(True) or var++(False)
+  | VarDec Bool Var -- --var(True) or var--(False)
+  | VarMemory Expr -- *var
+  | VarMember CType Expr Int -- var->offset
+  | VarArray CType Expr Expr -- var[index]
+  | VarROM CType Int -- ROM const
+  | VarRAM CType Int -- lowmem global
   | VarCast CType Var -- (type)var [left-value cast]
-  | RtlBitField CType Var Int Int -- (var >> offset) & (1<<size-1)
+  | VarBitField CType Var Int Int -- (var >> offset) & (1<<size-1)
 
 data JumpTarget
   = TargetAbsolute Int
@@ -78,6 +82,7 @@ data Stmt =
   StmtAssign Var Expr -- (dst) = (src)
  | StmtAssignOp Op2 Var Expr -- (dst) (op2)= (src)
  | StmtIf Expr [Stmt] [Stmt] -- if( exp ) { stmt1;} 
+ | StmtWhile Expr [Stmt]  -- while( exp ) { stmt1;} 
  | StmtAsm [Char] [Expr]
  | StmtPush Expr
  | StmtPop Var

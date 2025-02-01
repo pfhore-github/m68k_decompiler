@@ -1,6 +1,5 @@
 {-# OPTIONS_GHC -Wno-missing-signatures #-}
-{-# LANGUAGE BinaryLiterals     #-}
-{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE BinaryLiterals #-}
 
 module M68k.Parse where
 
@@ -710,12 +709,10 @@ parseShift dir t regT dn regN
         (DR regN)
   where
     isReg = testBit regT 2
-    sc =
-      if isReg
-        then BReg $ DR dn
-        else if dn == 0
-               then BImm 8
-               else BImm dn
+    sc
+      | isReg = BReg $ DR dn
+      | dn == 0 = BImm 8
+      | otherwise = BImm dn
 
 parseOpE 0 3 regT regN = ASR_EA <$> parseEAMem regT regN
 parseOpE 1 3 regT regN = LSR_EA <$> parseEAMem regT regN
@@ -784,9 +781,9 @@ next64 = do
   return $ high `shiftL` 32 .|. low
 
 parseOpFPULoad rm regT regN fpm fpn opc = do
-  let readFpuEA at@(FInt t) = do
+  let readFpuEA (FInt t) = do
         ea <- parseEA regT regN (ImmInt <$> nextX t)
-        return (at, FpuOperandInt ea)
+        return $ FpuOperandInt t ea
       readFpuEA x =
         if isSpecialEA regT regN
           then do
@@ -808,22 +805,22 @@ parseOpFPULoad rm regT regN fpm fpn opc = do
                   frac <- next64
                   let e = imm1 `shiftR` 16
                   return . fromPacked e $ fromIntegral frac
-            return (x, FpuImm v)
+            return $ FpuImm x v
           else do
             ea <- parseEAMem regT regN
-            return (x, FpuOperandFlt ea)
-  (t, src) <-
+            return $ FpuOperandFlt x ea
+  src <-
     if rm
-      then return (FEXT, FpuRn $ FPR fpm)
+      then return $ FpuRn $ FPR fpm
       else readFpuEA $ toAFType fpm
   return
     (if between opc 48 55
-       then FSINCOS t src (FPR $ opc .&. 7) $ FPR fpn
+       then FSINCOS src (FPR $ opc .&. 7) $ FPR fpn
        else if opc == 58
-              then FTST t src
+              then FTST src
               else maybe
                      ILLEGAL
-                     (\x -> FOp x t src $ FPR fpn)
+                     (\x -> FOp x src $ FPR fpn)
                      (case opc of
                         0b0000000 -> Just "fmove"
                         0b0000001 -> Just "fint"
@@ -881,28 +878,28 @@ parseOpFPULoad rm regT regN fpm fpn opc = do
 
 parseOpFPUStore regT regN 0 fpn _ = do
   ea <- parseEA regT regN nothingT
-  return $ FMOVEStore (FInt LONG) (FPR fpn) (FpuOperandInt ea)
+  return $ FMOVEStore (FPR fpn) (FpuOperandInt LONG ea)
 parseOpFPUStore regT regN 1 fpn _ = do
   ea <- parseEAMem regT regN
-  return $ FMOVEStore FSINGLE (FPR fpn) (FpuOperandFlt ea)
+  return $ FMOVEStore (FPR fpn) (FpuOperandFlt FSINGLE ea)
 parseOpFPUStore regT regN 2 fpn _ = do
   ea <- parseEAMem regT regN
-  return $ FMOVEStore FEXT (FPR fpn) (FpuOperandFlt ea)
+  return $ FMOVEStore (FPR fpn) (FpuOperandFlt FEXT ea)
 parseOpFPUStore regT regN 3 fpn k = do
   ea <- parseEAMem regT regN
-  return $ FMOVEStoreP (FPR fpn) (FpuOperandFlt ea) $ BImm k
+  return $ FMOVEStoreP (FPR fpn) (FpuOperandFlt FPACKED ea) $ BImm k
 parseOpFPUStore regT regN 4 fpn _ = do
   ea <- parseEA regT regN nothingT
-  return $ FMOVEStore (FInt WORD) (FPR fpn) (FpuOperandInt ea)
+  return $ FMOVEStore (FPR fpn) (FpuOperandInt WORD ea)
 parseOpFPUStore regT regN 5 fpn _ = do
   ea <- parseEAMem regT regN
-  return $ FMOVEStore FDOUBLE (FPR fpn) (FpuOperandFlt ea)
+  return $ FMOVEStore (FPR fpn) (FpuOperandFlt FDOUBLE ea)
 parseOpFPUStore regT regN 6 fpn _ = do
   ea <- parseEA regT regN nothingT
-  return $ FMOVEStore (FInt BYTE) (FPR fpn) (FpuOperandInt ea)
+  return $ FMOVEStore (FPR fpn) (FpuOperandInt BYTE ea)
 parseOpFPUStore regT regN 7 fpn k = do
   ea <- parseEAMem regT regN
-  return $ FMOVEStoreP (FPR fpn) (FpuOperandFlt ea) $ BReg $ DR k
+  return $ FMOVEStoreP (FPR fpn) (FpuOperandFlt FPACKED ea) $ BReg $ DR k
 parseOpFPUStore _ _ _ _ _ = nothingT
 
 parseOpF10_0 regT regN fpm fpn opc
@@ -953,7 +950,10 @@ parseOpF10_7 4 regN nw
             in return $ FMOVEM_DYNAMIC True ea $ DR dn
       else let bits = getBit nw 0 0xff
             in return $
-               FMOVEM_STATIC True ea [FPR n | n <- reverse [0 .. 7], testBit bits n]
+               FMOVEM_STATIC
+                 True
+                 ea
+                 [FPR n | n <- reverse [0 .. 7], testBit bits n]
 parseOpF10_7 regT regN nw
   | testBit nw 12 = do
     ea <- parseEAMem regT regN
@@ -962,7 +962,10 @@ parseOpF10_7 regT regN nw
             in return $ FMOVEM_DYNAMIC True ea $ DR dn
       else let bits = getBit nw 0 0xff
             in return $
-               FMOVEM_STATIC False ea [FPR n | n <- [0 .. 7], testBit bits (7 - n)]
+               FMOVEM_STATIC
+                 False
+                 ea
+                 [FPR n | n <- [0 .. 7], testBit bits (7 - n)]
   | otherwise = return ILLEGAL
 
 parseOpF10 regT regN = do

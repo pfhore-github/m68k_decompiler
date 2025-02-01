@@ -1,4 +1,4 @@
-module M68k.LongDouble(LongDouble, fromSingle, fromDouble, fromExtWord, fromPacked) where
+module M68k.LongDouble(LongDouble, fromSingle, fromDouble, fromExtWord, fromPacked, isNAN) where
 
 import qualified Data.Number.MPFR as M
 import Data.Ratio
@@ -65,6 +65,8 @@ instance Fractional LongDouble where
   fromRational x = ((fromInteger $ numerator x) :: LongDouble) /
                    ((fromInteger $ denominator x) :: LongDouble)
 
+isNAN :: M.MPFR -> Bool
+isNAN = M.isNaN
 instance Floating LongDouble where
   pi = LongDouble $ M.pi M.Near 64
   exp = liftLD M.exp

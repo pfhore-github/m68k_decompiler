@@ -130,18 +130,18 @@ instance PrintfArg CType where
 
 toUnsignedValue :: Bool -> Integer -> Integer
 toUnsignedValue False v = v
-toUnsignedValue True v = if v < 0 then (0x100000000 + v) else v
+toUnsignedValue True v = if v < 0 then 0x100000000 + v else v
 
 toSignedValue :: Bool -> Integer -> Integer
 toSignedValue False v = v
-toSignedValue True v = if v > 0x7FFFFFFF then (0x100000000 - v) else v
+toSignedValue True v = if v > 0x7FFFFFFF then 0x100000000 - v else v
 
 typePromote :: CType -> CType -> CType
 typePromote a b = 
-  if (isInteger a) && (isInteger b) then
+  if isInteger a && isInteger b then
     let aIsSigned = isSignedType a
         bIsSigned = isSignedType b
-    in if (aIsSigned && bIsSigned) then
+    in if aIsSigned && bIsSigned then
           INT32
        else 
           UINT32

@@ -22,7 +22,7 @@ typeOfE (ExprCast t _)        = t
 typeOfE (ExprOp1 LNOT _)      = BOOL
 typeOfE (ExprOp1 (Ex1 t _) _) = t
 typeOfE (ExprOp1 _ v)         = typeOfE v
-typeOfE (ExprJoin a _)    = joinType (typeOfE a)
+typeOfE (ExprJoin a _)        = joinType (typeOfE a)
 typeOfE (ExprOp2 ADDC _ _)    = BOOL
 
 show2 :: Op2 -> (Expr -> Expr -> String)
@@ -63,10 +63,10 @@ show2 AST.Common.GE  = \a b -> printf "(%s) <= (%s)" (show a) (show b)
 show2 (Ex2 _ s)      = \a b -> printf "%s(%s, %s)" s (show a) (show b)
 
 def1 :: (Term a1) => Op1 -> (a1 -> Expr)
-def1 p = \a -> ExprOp1 p (getExpr a)
+def1 p a = ExprOp1 p (getExpr a)
 
 def2 :: (Term a1, Term a2) => Op2 -> (a1 -> a2 -> Expr)
-def2 p = \a b -> ExprOp2 p (getExpr a) (getExpr b)
+def2 p a b = ExprOp2 p (getExpr a) (getExpr b)
 
 cast :: Term a => CType -> a -> Expr
 cast t v = ExprCast t (getExpr v)
@@ -193,11 +193,11 @@ sel :: (Term a1, Term a2, Term a3) => a1 -> a2 -> a3 -> Expr
 sel ex t f = ExprSel (getExpr ex) (getExpr t) (getExpr f)
 
 deref :: (Term a1) => a1 -> Var
-deref v = RtlMemory (getExpr v)
+deref v = VarMemory (getExpr v)
 
 evalE :: Expr -> Expr
 evalE (ExprCast UINT8 (ExprInt _ c)) = ExprInt False $ c .&. 0xFF
-evalE (ExprCast UINT8 (ExprJoin a b)) 
+evalE (ExprCast UINT8 (ExprJoin a b))
   | typeOfE a == UINT8 = b
   | typeOfE a == INT8 = cast INT8 b
 evalE (ExprCast INT8 (ExprInt _ c)) =
@@ -206,11 +206,11 @@ evalE (ExprCast INT8 (ExprInt _ c)) =
       if c' > 0x7f
         then c' - 0x100
         else c'
-evalE (ExprCast INT8 (ExprJoin a b)) 
+evalE (ExprCast INT8 (ExprJoin a b))
   | typeOfE a == INT8 = b
   | typeOfE a == UINT8 = cast UINT8 b
 evalE (ExprCast INT16 (ExprInt _ c)) = ExprInt False $ c .&. 0xffff
-evalE (ExprCast INT16 (ExprJoin a b)) 
+evalE (ExprCast INT16 (ExprJoin a b))
   | typeOfE a == INT16 = b
   | typeOfE a == UINT16 = cast UINT16 b
 evalE (ExprCast UINT16 (ExprInt _ c)) =
@@ -219,7 +219,7 @@ evalE (ExprCast UINT16 (ExprInt _ c)) =
       if c' > 0x7fff
         then c' - 0x10000
         else c'
-evalE (ExprCast UINT16 (ExprJoin a b)) 
+evalE (ExprCast UINT16 (ExprJoin a b))
   | typeOfE a == UINT16 = b
   | typeOfE a == INT16 = cast UINT16 b
 evalE (ExprCast INT32 (ExprInt _ c)) = ExprInt False c
@@ -239,30 +239,30 @@ evalE (ExprOp1 AST.Common.LNOT (ExprOp2 AST.Common.LT a b)) = a $>= b
 evalE (ExprOp1 AST.Common.LNOT (ExprOp2 AST.Common.LE a b)) = a $> b
 evalE (ExprOp1 AST.Common.LNOT (ExprOp2 AST.Common.GT a b)) = a $<= b
 evalE (ExprOp1 AST.Common.LNOT (ExprOp2 AST.Common.GE a b)) = a $< b
-evalE (ExprOp1 op v) = (ExprOp1 op $ evalE v)
+evalE (ExprOp1 op v) = ExprOp1 op $ evalE v
 evalE (ExprOp2 AST.Common.BTST (ExprInt _ v1) (ExprInt _ v2)) =
-  boolE $ (v1 .>>. (fromIntegral v2)) .&. 1
+  boolE $ (v1 .>>. fromIntegral v2) .&. 1
 evalE (ExprOp2 AST.Common.BTST a (ExprInt _ v2)) =
-  cast BOOL $ a $& (uintE $ (1 :: Integer) .<<. (fromIntegral v2))
+  cast BOOL $ a $& uintE ((1 :: Integer) .<<. fromIntegral v2)
 evalE (ExprOp2 AST.Common.BSET (ExprInt s v1) (ExprInt _ v2)) =
-  ExprInt s $ v1 .|. (1 .<<. (fromIntegral v2))
+  ExprInt s $ v1 .|. (1 .<<. fromIntegral v2)
 evalE (ExprOp2 AST.Common.BSET a (ExprInt _ v2)) =
-  a $| (uintE $ (1 :: Integer) .<<. (fromIntegral v2))
+  a $| uintE ((1 :: Integer) .<<. fromIntegral v2)
 evalE (ExprOp2 AST.Common.BFLIP (ExprInt s v1) (ExprInt _ v2)) =
-  ExprInt s $ v1 .^. (1 .<<. (fromIntegral v2))
+  ExprInt s $ v1 .^. (1 .<<. fromIntegral v2)
 evalE (ExprOp2 AST.Common.BFLIP a (ExprInt _ v2)) =
-  a $^ (uintE $ (1 :: Integer) .<<. (fromIntegral v2))
+  a $^ uintE ((1 :: Integer) .<<. fromIntegral v2)
 evalE (ExprOp2 AST.Common.BCLR (ExprInt s v1) (ExprInt _ v2)) =
-  ExprInt s $ v1 .&. (complement $ 1 .<<. (fromIntegral v2))
+  ExprInt s $ v1 .&. complement (1 .<<. fromIntegral v2)
 evalE (ExprOp2 AST.Common.BCLR a (ExprInt _ v2)) =
-  a $& (uintE $ complement $ ((1 :: Integer) .<<. (fromIntegral v2)))
+  a $& uintE (complement ((1 :: Integer) .<<. fromIntegral v2))
 evalE (ExprOp2 AST.Common.SR (ExprInt s v1) (ExprInt _ v2))
-  | s == True = doSr (fromIntegral v1 :: Int32) v2
-  | s == False = doSr (fromIntegral v1 :: Word32) v2
+  | s = doSr (fromIntegral v1 :: Int32) v2
+  | not s = doSr (fromIntegral v1 :: Word32) v2
   where
-    doSr val sc = ExprInt s $ fromIntegral $ val .>>. (fromIntegral sc)
+    doSr val sc = ExprInt s $ fromIntegral $ val .>>. fromIntegral sc
 evalE (ExprOp2 AST.Common.SL (ExprInt t v1) (ExprInt _ v2)) =
-  ExprInt t $ v1 .<<. (fromIntegral v2)
+  ExprInt t $ v1 .<<. fromIntegral v2
 evalE (ExprOp2 AST.Common.AND (ExprInt _ v1) (ExprInt _ v2)) = uintE $ v1 .&. v2
 evalE (ExprOp2 AST.Common.OR (ExprInt _ v1) (ExprInt _ v2)) = uintE $ v1 .|. v2
 evalE (ExprOp2 AST.Common.XOR (ExprInt _ v1) (ExprInt _ v2)) = uintE $ v1 .^. v2
@@ -271,20 +271,29 @@ evalE (ExprOp2 AST.Common.ANDN (ExprInt _ v1) (ExprInt _ v2)) =
 evalE (ExprOp2 AST.Common.ORN (ExprInt _ v1) (ExprInt _ v2)) =
   uintE $ v1 .|. complement v2
 evalE (ExprOp2 AST.Common.NAND (ExprInt _ v1) (ExprInt _ v2)) =
-  uintE $ (complement v1) .&. v2
+  uintE $ complement v1 .&. v2
 evalE (ExprOp2 AST.Common.NOR (ExprInt _ v1) (ExprInt _ v2)) =
-  uintE $ (complement v1) .|. v2
+  uintE $ complement v1 .|. v2
 evalE (ExprOp2 AST.Common.ADD (ExprInt _ v1) (ExprInt _ v2)) = intE $ v1 + v2
 evalE (ExprOp2 AST.Common.SUB (ExprInt _ v1) (ExprInt _ v2)) = intE $ v1 - v2
 evalE (ExprOp2 AST.Common.MUL (ExprInt _ v1) (ExprInt _ v2)) = intE $ v1 * v2
-evalE (ExprOp2 AST.Common.DIV (ExprInt _ v1) (ExprInt _ v2)) = intE $ v1 `div` v2
-evalE (ExprOp2 AST.Common.MOD (ExprInt _ v1) (ExprInt _ v2)) = intE $ v1 `mod` v2
-evalE (ExprOp2 AST.Common.EQ (ExprInt _ v1) (ExprInt _ v2)) = ExprBool $ v1 == v2
-evalE (ExprOp2 AST.Common.NEQ (ExprInt _ v1) (ExprInt _ v2)) = ExprBool $ v1 /= v2
+evalE (ExprOp2 AST.Common.DIV (ExprInt _ v1) (ExprInt _ v2)) =
+  intE $ v1 `div` v2
+evalE (ExprOp2 AST.Common.MOD (ExprInt _ v1) (ExprInt _ v2)) =
+  intE $ v1 `mod` v2
+evalE (ExprOp2 AST.Common.EQ (ExprInt _ v1) (ExprInt _ v2)) =
+  ExprBool $ v1 == v2
+evalE (ExprOp2 AST.Common.NEQ (ExprInt _ v1) (ExprInt _ v2)) =
+  ExprBool $ v1 /= v2
 evalE (ExprOp2 AST.Common.LT (ExprInt _ v1) (ExprInt _ v2)) = ExprBool $ v1 < v2
-evalE (ExprOp2 AST.Common.LE (ExprInt _ v1) (ExprInt _ v2)) = ExprBool $ v1 <= v2
+evalE (ExprOp2 AST.Common.LE (ExprInt _ v1) (ExprInt _ v2)) =
+  ExprBool $ v1 <= v2
 evalE (ExprOp2 AST.Common.GT (ExprInt _ v1) (ExprInt _ v2)) = ExprBool $ v1 > v2
-evalE (ExprOp2 AST.Common.GE (ExprInt _ v1) (ExprInt _ v2)) = ExprBool $ v1 >= v2
-evalE (ExprOp2 op v1 v2) = (ExprOp2 op (evalE v1) (evalE v2))
-evalE (ExprSel (ExprBool b) t f) = if b then t else f
+evalE (ExprOp2 AST.Common.GE (ExprInt _ v1) (ExprInt _ v2)) =
+  ExprBool $ v1 >= v2
+evalE (ExprOp2 op v1 v2) = ExprOp2 op (evalE v1) (evalE v2)
+evalE (ExprSel (ExprBool b) t f) =
+  if b
+    then t
+    else f
 evalE e = e

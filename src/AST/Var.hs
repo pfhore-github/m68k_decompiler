@@ -7,17 +7,19 @@ import AST.CType
 
 
 typeOfV :: Var -> CType
-typeOfV (RtlReg t _) = t
-typeOfV (RtlInc _ v) = typeOfV v
-typeOfV (RtlDec _ v) = typeOfV v
-typeOfV (RtlMemory v) =
+typeOfV (GlobalVar t _) = t
+typeOfV (EnvVar t _) = t
+typeOfV (TmpVar t _) = t
+typeOfV (VarInc _ v) = typeOfV v
+typeOfV (VarDec _ v) = typeOfV v
+typeOfV (VarMemory v) =
   let t = typeOfE v
    in case t of
         (PTR c) -> c
         _       -> undefined
-typeOfV (RtlMemoryI t _ _) = t
-typeOfV (RtlMemoryD t _ _) = t
-typeOfV (RtlMemoryC t _) = t
-typeOfV (RtlMemoryG t _) = t
+typeOfV (VarMember t _ _) = t
+typeOfV (VarArray t _ _) = t
+typeOfV (VarROM t _) = t
+typeOfV (VarRAM t _) = t
 typeOfV (VarCast t _) = t
-typeOfV (RtlBitField t _ _ _) = t
+typeOfV (VarBitField t _ _ _) = t
